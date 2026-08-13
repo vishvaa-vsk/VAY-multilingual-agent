@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Strands Visualizer & Mic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: rgba(10, 10, 12, 0.95);
+      --glass-bg: rgba(255, 255, 255, 0.05);
+      --glass-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f3f4f6;
+      --text-sub: #9ca3af;
+      --glow-idle: rgba(255, 255, 255, 0.2);
+      --glow-listening: rgba(249, 115, 22, 0.6);
+      --glow-thinking: rgba(124, 58, 237, 0.6);
+      --glow-speaking: rgba(6, 182, 212, 0.6);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      font-family: 'Outfit', sans-serif;
+      color: var(--text-main);
+    }
+
+    .strands-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      background: transparent;
+    }
+
+    .strands-container canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 24px;
+      pointer-events: none;
+    }
+
+    .header-bar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    .header-bar h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      background: linear-gradient(135deg, #f97316, #7c3aed, #06b6d4);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 4px;
+    }
+
+    .header-bar p {
+      font-size: 12px;
+      color: var(--text-sub);
+    }
+
+    .controls-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+
+    .mic-button-container {
+      position: relative;
+      width: 120px;
+      height: 120px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pulse-ring {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: transparent;
+      border: 2px solid transparent;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Listening Pulse Animation */
+    .status-listening .pulse-ring {
+      border-color: #f97316;
+      animation: pulse-out 2s infinite ease-out;
+    }
+    .status-listening .pulse-ring:nth-child(2) {
+      animation-delay: 0.6s;
+    }
+    .status-listening .pulse-ring:nth-child(3) {
+      animation-delay: 1.2s;
+    }
+
+    @keyframes pulse-out {
+      0% {
+        transform: scale(0.9);
+        opacity: 0.8;
+        filter: blur(1px);
+      }
+      100% {
+        transform: scale(2.2);
+        opacity: 0;
+        filter: blur(8px);
+      }
+    }
+
+    .mic-button {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      border: none;
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      z-index: 5;
+    }
+
+    .mic-button svg {
+      width: 32px;
+      height: 32px;
+      fill: var(--text-main);
+      transition: all 0.3s ease;
+    }
+
+    /* Status specific styles */
+    .status-idle .mic-button {
+      box-shadow: 0 0 20px var(--glow-idle), inset 0 0 10px rgba(255,255,255,0.05);
+    }
+    .status-idle .mic-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 35px rgba(255,255,255,0.4);
+    }
+
+    .status-listening .mic-button {
+      background: linear-gradient(135deg, rgba(249,115,22,0.2), rgba(249,115,22,0.05));
+      border-color: rgba(249,115,22,0.4);
+      box-shadow: 0 0 30px var(--glow-listening), inset 0 0 15px rgba(249,115,22,0.2);
+      transform: scale(1.05);
+    }
+    .status-listening .mic-button svg {
+      fill: #f97316;
+      transform: scale(1.1);
+    }
+
+    .status-thinking .mic-button {
+      background: linear-gradient(135deg, rgba(124,58,237,0.1), rgba(124,58,237,0.02));
+      border-color: rgba(124,58,237,0.3);
+      box-shadow: 0 0 25px var(--glow-thinking);
+      transform: scale(0.95);
+      animation: thinking-breathing 1.5s infinite alternate ease-in-out;
+    }
+    .status-thinking .mic-button svg {
+      fill: #7c3aed;
+      animation: spinning-icon 2s infinite linear;
+    }
+
+    @keyframes thinking-breathing {
+      0% { box-shadow: 0 0 15px rgba(124,58,237,0.3); }
+      100% { box-shadow: 0 0 35px rgba(124,58,237,0.8); }
+    }
+    @keyframes spinning-icon {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .status-speaking .mic-button {
+      background: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(6,182,212,0.05));
+      border-color: rgba(6,182,212,0.4);
+      box-shadow: 0 0 30px var(--glow-speaking), inset 0 0 15px rgba(6,182,212,0.1);
+    }
+    .status-speaking .mic-button svg {
+      fill: #06b6d4;
+    }
+
+    .status-handoff .mic-button {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: rgba(239, 68, 68, 0.5);
+      box-shadow: 0 0 30px rgba(239, 68, 68, 0.5);
+    }
+    .status-handoff .mic-button svg {
+      fill: #ef4444;
+    }
+
+    .status-label {
+      margin-top: 16px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      text-align: center;
+      min-height: 20px;
+      transition: all 0.3s ease;
+    }
+
+    .status-idle .status-label { color: var(--text-sub); }
+    .status-listening .status-label { color: #f97316; text-shadow: 0 0 10px rgba(249,115,22,0.3); }
+    .status-thinking .status-label { color: #7c3aed; text-shadow: 0 0 10px rgba(124,58,237,0.3); }
+    .status-speaking .status-label { color: #06b6d4; text-shadow: 0 0 10px rgba(6,182,212,0.3); }
+    .status-handoff .status-label { color: #ef4444; text-shadow: 0 0 10px rgba(239,68,68,0.3); }
+
+    .bottom-controls {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 320px;
+      gap: 16px;
+      pointer-events: auto;
+      margin-bottom: 10px;
+    }
+
+    .control-btn {
+      width: 100%;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      border: 1px solid var(--glass-border);
+      background: var(--glass-bg);
+      color: var(--text-main);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.3s ease;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+      transform: translateY(-1px);
+    }
+
+    .control-btn.btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #ef4444;
+    }
+
+    .control-btn.btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
+      border-color: rgba(239, 68, 68, 0.5);
+      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
+    }
+
+    /* Waveform visualizer container (optional layout addition if needed) */
+    .waveform-visualizer {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 20px;
+      margin-top: 8px;
+    }
+
+    .wave-bar {
+      width: 3px;
+      height: 4px;
+      background-color: var(--text-sub);
+      border-radius: 2px;
+      transition: height 0.1s ease;
+    }
+
+    .status-listening .wave-bar { background-color: #f97316; }
+    .status-speaking .wave-bar { background-color: #06b6d4; }
+  </style>
+</head>
+<body class="status-idle" id="body-root">
+
+  <div class="strands-container" id="strands-ctn"></div>
+
+  <div class="ui-overlay">
+    <div class="header-bar">
+      <h1>VAY Assistant</h1>
+      <p id="sub-status">Speech Interface Active</p>
+    </div>
+
+    <div class="controls-center">
+      <div class="mic-button-container" id="pulse-container">
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <button class="mic-button" id="mic-btn" title="Toggle Microphone">
+          <svg viewBox="0 0 24 24" id="mic-svg">
+            <!-- Default Mic Icon -->
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="status-label" id="status-txt">READY</div>
+      
+      <div class="waveform-visualizer" id="wave-vis" style="display: none;">
+        <div class="wave-bar" style="height: 6px;"></div>
+        <div class="wave-bar" style="height: 12px;"></div>
+        <div class="wave-bar" style="height: 8px;"></div>
+        <div class="wave-bar" style="height: 14px;"></div>
+        <div class="wave-bar" style="height: 18px;"></div>
+        <div class="wave-bar" style="height: 10px;"></div>
+        <div class="wave-bar" style="height: 4px;"></div>
+      </div>
+    </div>
+
+    <div class="bottom-controls">
+      <button class="control-btn btn-danger" id="end-btn">
+        <svg style="width:16px;height:16px;" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/>
+        </svg>
+        End & Escalate Session
+      </button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Renderer, Program, Mesh, Color, Triangle, RenderTarget } from 'https://cdn.jsdelivr.net/npm/ogl@1.0.11/+esm';
+
+    const MAX_STRANDS = 12;
+    const MAX_COLORS = 8;
+
+    const VERT = `#version 300 es
+    in vec2 position;
+    void main() {
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+    `;
+
+    const FRAG = `#version 300 es
+    precision highp float;
+
+    uniform float uTime;
+    uniform vec2 uResolution;
+    uniform vec3 uColors[${MAX_COLORS}];
+    uniform int uColorCount;
+    uniform int uStrandCount;
+    uniform float uSpeed;
+    uniform float uAmplitude;
+    uniform float uWaviness;
+    uniform float uThickness;
+    uniform float uGlow;
+    uniform float uTaper;
+    uniform float uSpread;
+    uniform float uHueShift;
+    uniform float uIntensity;
+    uniform float uOpacity;
+    uniform float uScale;
+    uniform float uSaturation;
+
+    out vec4 fragColor;
+
+    const float PI = 3.14159265;
+
+    vec3 spectrum(float t) {
+      return 0.5 + 0.5 * cos(2.0 * PI * (t + vec3(0.00, 0.33, 0.67)));
+    }
+
+    vec3 samplePalette(float t) {
+      t = fract(t);
+      float scaled = t * float(uColorCount);
+      int idx = int(floor(scaled));
+      float blend = fract(scaled);
+      int nextIdx = idx + 1;
+      if (nextIdx >= uColorCount) nextIdx = 0;
+      return mix(uColors[idx], uColors[nextIdx], blend);
+    }
+
+    vec3 strandColor(float t) {
+      if (uColorCount > 0) return samplePalette(t);
+      return spectrum(t);
+    }
+
+    void main() {
+      vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+      uv /= max(uScale, 0.0001);
+
+      float e = 0.06 + uIntensity * 0.94;
+      float env = pow(max(cos(uv.x * PI * 1.3), 0.0), uTaper);
+
+      vec3 col = vec3(0.0);
+
+      for (int i = 0; i < ${MAX_STRANDS}; i++) {
+        if (i >= uStrandCount) break;
+
+        float fi = float(i);
+        float ph = fi * 1.7 * uSpread;
+        float freq = (2.0 + fi * 0.35) * uWaviness;
+        float spd = 1.4 + fi * 1.2;
+
+        float tt = uTime * uSpeed;
+        float w = sin(uv.x * freq + tt * spd + ph) * 0.60
+                + sin(uv.x * freq * 1.1 - tt * spd * 0.7 + ph * 1.7) * 0.40;
+
+        float amp = (0.1 + 0.02 * e) * env * uAmplitude;
+        float y = w * amp;
+
+        float d = abs(uv.y - y);
+        float thick = (0.001 + 0.05 * e) * (0.35 + env) * uThickness;
+        float g = thick / (d + thick * 0.45);
+        g = g * g;
+
+        float h = fi / float(uStrandCount) + uv.x * 0.30 + uTime * 0.04 + uHueShift;
+        col += strandColor(h) * g * env;
+      }
+
+      col *= 0.45 + 0.7 * e;
+      col = 1.0 - exp(-col * uGlow);
+
+      float gray = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = max(mix(vec3(gray), col, uSaturation), 0.0);
+
+      float lum = max(max(col.r, col.g), col.b);
+      float alpha = clamp(lum, 0.0, 1.0) * uOpacity;
+
+      fragColor = vec4(col * uOpacity, alpha);
+    }
+    `;
+
+    const GLASS_FRAG = `#version 300 es
+    precision highp float;
+
+    uniform sampler2D uScene;
+    uniform vec2 uResolution;
+    uniform float uRadius;
+    uniform float uRefraction;
+    uniform float uDispersion;
+
+    out vec4 fragColor;
+
+    vec2 toUv(vec2 p) {
+      return p * (uResolution.y / uResolution) + 0.5;
+    }
+
+    void main() {
+      vec2 p = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+      float d = length(p);
+      float r = uRadius;
+
+      float edge = fwidth(d) * 1.5;
+      float mask = 1.0 - smoothstep(r - edge, r + edge, d);
+      if (mask <= 0.0) {
+        fragColor = vec4(0.0);
+        return;
+      }
+
+      float z = sqrt(max(r * r - d * d, 0.0)) / r;
+      float nd = d / r;
+
+      vec2 dir = d > 0.0 ? p / d : vec2(0.0);
+      float lens = smoothstep(0.85, 1.0, nd) * pow(nd, 6.0);
+      vec2 offset = -dir * lens * uRefraction * 0.15;
+      vec2 disp = -dir * lens * uDispersion * 0.012;
+
+      vec3 light;
+      light.r = texture(uScene, toUv(p + offset - disp)).r;
+      light.g = texture(uScene, toUv(p + offset)).g;
+      light.b = texture(uScene, toUv(p + offset + disp)).b;
+
+      float fres = pow(1.0 - z, 3.0);
+      vec3 rim = vec3(1.0) * fres * 0.18;
+
+      vec2 lightDir = normalize(vec2(-0.55, 0.6));
+      float spec = pow(max(dot(p / max(r, 1e-4), lightDir), 0.0), 6.0);
+      spec *= smoothstep(r, r * 0.55, d);
+
+      vec3 emissive = light + rim + vec3(spec) * 0.4;
+      float emissiveA = clamp(max(max(emissive.r, emissive.g), emissive.b), 0.0, 1.0);
+
+      float bodyA = 0.05 + fres * 0.05;
+
+      float outA = emissiveA + bodyA * (1.0 - emissiveA);
+      vec3 outRGB = emissive;
+
+      outRGB *= mask;
+      outA *= mask;
+
+      fragColor = vec4(outRGB, outA);
+    }
+    `;
+
+    const buildPalette = colors => {
+      const filled = colors && colors.length ? colors : ['#ffffff'];
+      const padded = [];
+      for (let i = 0; i < MAX_COLORS; i++) {
+        const hex = filled[i] ?? filled[filled.length - 1];
+        const c = new Color(hex);
+        padded.push([c.r, c.g, c.b]);
+      }
+      return padded;
+    };
+
+    // Component configuration properties with default values
+    let config = {
+      colors: ['#FF4242', '#7C3AED', '#06B6D4', '#EAB308'],
+      count: 3,
+      speed: 0.5,
+      amplitude: 1.0,
+      waviness: 1.0,
+      thickness: 0.7,
+      glow: 2.6,
+      taper: 3.0,
+      spread: 1.0,
+      hueShift: 0.0,
+      intensity: 0.6,
+      saturation: 1.5,
+      opacity: 1.0,
+      scale: 1.5,
+      glass: false,
+      refraction: 1.0,
+      dispersion: 1.0,
+      glassSize: 1.0,
+      status: 'idle',
+      audio_data: null
+    };
+
+    // State Variables for visualizer reactivity
+    let micVolume = 0.0;
+    let targetSpeedMod = 0.0;
+    let currentSpeedMod = 0.0;
+    let targetAmpMod = 0.0;
+    let currentAmpMod = 0.0;
+
+    // Web Audio Variables for recording & playback visualizer
+    let audioContext = null;
+    let analyserNode = null;
+    let micStream = null;
+    let micProcessor = null;
+    let recordedChunks = [];
+    let isRecording = false;
+    let activeAudioSource = null;
+    let recordingLength = 0;
+
+    // DOM References
+    const bodyRoot = document.getElementById('body-root');
+    const statusTxt = document.getElementById('status-txt');
+    const subStatusTxt = document.getElementById('sub-status');
+    const micBtn = document.getElementById('mic-btn');
+    const endBtn = document.getElementById('end-btn');
+    const waveVis = document.getElementById('wave-vis');
+    const waveBars = document.querySelectorAll('.wave-bar');
+
+    // UI helper for icon updates
+    function setMicIcon(iconType) {
+      const micSvg = document.getElementById('mic-svg');
+      if (iconType === 'stop') {
+        // Red square / Stop icon
+        micSvg.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" />';
+      } else if (iconType === 'thinking') {
+        // Spinning reload icon
+        micSvg.innerHTML = '<path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm-6.7 2.2L3.84 4.74C2.46 6.97 2 9.57 2 12c0 4.42 3.58 8 8 8v-3c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8z"/>';
+      } else {
+        // Microphone icon
+        micSvg.innerHTML = '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>';
+      }
+    }
+
+    // Set UI state classes & label text
+    function updateUIState(state) {
+      bodyRoot.className = `status-${state}`;
+      statusTxt.textContent = state.toUpperCase();
+
+      if (state === 'idle') {
+        setMicIcon('mic');
+        subStatusTxt.textContent = 'Voice Interface Active';
+        waveVis.style.display = 'none';
+      } else if (state === 'listening') {
+        setMicIcon('stop');
+        subStatusTxt.textContent = 'Speak now...';
+        waveVis.style.display = 'flex';
+      } else if (state === 'thinking') {
+        setMicIcon('thinking');
+        subStatusTxt.textContent = 'Processing request...';
+        waveVis.style.display = 'none';
+      } else if (state === 'speaking') {
+        setMicIcon('mic');
+        subStatusTxt.textContent = 'Assistant responding...';
+        waveVis.style.display = 'flex';
+      } else if (state === 'handoff') {
+        setMicIcon('mic');
+        subStatusTxt.textContent = 'Escalating to human agent...';
+        waveVis.style.display = 'none';
+      }
+      
+      // Update iframe height automatically
+      sendFrameHeight();
+    }
+
+    // Send messages back to Streamlit
+    function sendMessageToStreamlit(data) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setComponentValue",
+        value: data
+      }, "*");
+    }
+
+    function sendFrameHeight() {
+      // We want to make sure the full height is represented in Streamlit
+      const height = document.body.scrollHeight || 600;
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setFrameHeight",
+        height: height
+      }, "*");
+    }
+
+    // WebGL Strands Setup
+    const ctn = document.getElementById('strands-ctn');
+    const renderer = new Renderer({
+      alpha: true,
+      premultipliedAlpha: true,
+      antialias: true
+    });
+    const gl = renderer.gl;
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.canvas.style.backgroundColor = 'transparent';
+
+    const geometry = new Triangle(gl);
+    if (geometry.attributes.uv) {
+      delete geometry.attributes.uv;
+    }
+
+    const program = new Program(gl, {
+      vertex: VERT,
+      fragment: FRAG,
+      uniforms: {
+        uTime: { value: 0 },
+        uResolution: { value: [ctn.offsetWidth, ctn.offsetHeight] },
+        uColors: { value: buildPalette(config.colors) },
+        uColorCount: { value: Math.min(config.colors.length, MAX_COLORS) },
+        uStrandCount: { value: Math.min(config.count, MAX_STRANDS) },
+        uSpeed: { value: config.speed },
+        uAmplitude: { value: config.amplitude },
+        uWaviness: { value: config.waviness },
+        uThickness: { value: config.thickness },
+        uGlow: { value: config.glow },
+        uTaper: { value: config.taper },
+        uSpread: { value: config.spread },
+        uHueShift: { value: config.hueShift },
+        uIntensity: { value: config.intensity },
+        uOpacity: { value: config.opacity },
+        uScale: { value: config.scale },
+        uSaturation: { value: config.saturation }
+      }
+    });
+
+    const mesh = new Mesh(gl, { geometry, program });
+
+    const renderTarget = new RenderTarget(gl, {
+      width: ctn.offsetWidth,
+      height: ctn.offsetHeight
+    });
+
+    const glassProgram = new Program(gl, {
+      vertex: VERT,
+      fragment: GLASS_FRAG,
+      uniforms: {
+        uScene: { value: renderTarget.texture },
+        uResolution: { value: [ctn.offsetWidth, ctn.offsetHeight] },
+        uRadius: { value: 0.46 * config.glassSize },
+        uRefraction: { value: config.refraction },
+        uDispersion: { value: config.dispersion }
+      }
+    });
+    const glassMesh = new Mesh(gl, { geometry, program: glassProgram });
+
+    ctn.appendChild(gl.canvas);
+
+    function resize() {
+      if (!ctn) return;
+      const width = ctn.offsetWidth;
+      const height = ctn.offsetHeight;
+      renderer.setSize(width, height);
+      program.uniforms.uResolution.value = [width, height];
+      renderTarget.setSize(width, height);
+      glassProgram.uniforms.uResolution.value = [width, height];
+      sendFrameHeight();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Animation Loop
+    let animateId = 0;
+    const update = t => {
+      animateId = requestAnimationFrame(update);
+      
+      // Interpolate audio reactivity modifiers smoothly
+      currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.15;
+      currentAmpMod += (targetAmpMod - currentAmpMod) * 0.15;
+
+      program.uniforms.uTime.value = t * 0.001;
+      program.uniforms.uColors.value = buildPalette(config.colors);
+      program.uniforms.uColorCount.value = Math.min(config.colors.length, MAX_COLORS);
+      program.uniforms.uStrandCount.value = Math.min(Math.max(Math.round(config.count), 1), MAX_STRANDS);
+      
+      // Combine base properties with live audio mod
+      program.uniforms.uSpeed.value = config.speed + currentSpeedMod;
+      program.uniforms.uAmplitude.value = config.amplitude + currentAmpMod;
+      
+      program.uniforms.uWaviness.value = config.waviness;
+      program.uniforms.uThickness.value = config.thickness;
+      program.uniforms.uGlow.value = config.glow;
+      program.uniforms.uTaper.value = config.taper;
+      program.uniforms.uSpread.value = config.spread;
+      program.uniforms.uHueShift.value = config.hueShift;
+      program.uniforms.uIntensity.value = config.intensity;
+      program.uniforms.uOpacity.value = config.opacity;
+      program.uniforms.uScale.value = config.scale;
+      program.uniforms.uSaturation.value = config.saturation;
+
+      if (config.glass) {
+        renderer.render({ scene: mesh, target: renderTarget });
+        glassProgram.uniforms.uScene.value = renderTarget.texture;
+        glassProgram.uniforms.uRefraction.value = config.refraction;
+        glassProgram.uniforms.uDispersion.value = config.dispersion;
+        glassProgram.uniforms.uRadius.value = 0.46 * config.glassSize;
+        renderer.render({ scene: glassMesh });
+      } else {
+        renderer.render({ scene: mesh });
+      }
+
+      // If active listening or speaking, run audio FFT visualizer
+      if (analyserNode && (config.status === 'listening' || config.status === 'speaking')) {
+        const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+        analyserNode.getByteFrequencyData(dataArray);
+
+        // Apply volume FFT values to styling elements
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+        
+        // Drive wave visualizer UI bars
+        for (let i = 0; i < waveBars.length; i++) {
+          const index = Math.floor((i / waveBars.length) * dataArray.length * 0.4); // Focus on mid-bass frequencies
+          const height = Math.max(4, (dataArray[index] / 255) * 32);
+          waveBars[i].style.height = `${height}px`;
+        }
+
+        // Apply reactiveness to Strands
+        targetAmpMod = (avg / 255) * 2.0;
+        targetSpeedMod = (avg / 255) * 1.5;
+      } else {
+        targetAmpMod = 0;
+        targetSpeedMod = 0;
+      }
+    };
+    animateId = requestAnimationFrame(update);
+
+    // Streamlit Message Handlers
+    window.addEventListener("message", (event) => {
+      if (event.data.type === "streamlit:render") {
+        const args = event.data.args;
+        
+        // Update local config variables from Python
+        for (const key in args) {
+          if (args.hasOwnProperty(key)) {
+            config[key] = args[key];
+          }
+        }
+
+        // Update CSS palette colors dynamically if customized
+        if (config.colors && config.colors.length >= 3) {
+          document.documentElement.style.setProperty('--glow-listening', `rgba(${hexToRgb(config.colors[0])}, 0.6)`);
+          document.documentElement.style.setProperty('--glow-thinking', `rgba(${hexToRgb(config.colors[1])}, 0.6)`);
+          document.documentElement.style.setProperty('--glow-speaking', `rgba(${hexToRgb(config.colors[2])}, 0.6)`);
+        }
+
+        // Handle Status and Playback changes
+        updateUIState(config.status);
+
+        if (args.audio_data && args.audio_data !== prevAudioData) {
+          prevAudioData = args.audio_data;
+          playBase64Audio(args.audio_data);
+        }
+      }
+    });
+
+    let prevAudioData = null;
+
+    function hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` : '255,255,255';
+    }
+
+    // Tell Streamlit component is ready
+    function initStreamlitComponent() {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:componentReady",
+        apiVersion: 1
+      }, "*");
+      sendFrameHeight();
+    }
+
+    // Audio Capture and WAV Encoder Logic
+    function startAudioRecording() {
+      if (isRecording) return;
+      
+      initAudioContext();
+      
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          micStream = stream;
+          isRecording = true;
+          recordedChunks = [];
+          recordingLength = 0;
+
+          const sourceNode = audioContext.createMediaStreamSource(stream);
+          sourceNode.connect(analyserNode);
+
+          // We use script processor for direct simple floating point manipulation
+          micProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          micProcessor.onaudioprocess = function(e) {
+            if (!isRecording) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            
+            // Push clone to buffer
+            recordedChunks.push(new Float32Array(inputData));
+            recordingLength += inputData.length;
+          };
+
+          sourceNode.connect(micProcessor);
+          micProcessor.connect(audioContext.destination);
+
+          // Send listening state update to Streamlit
+          sendMessageToStreamlit({ event: "mic_start" });
+        })
+        .catch(err => {
+          console.error("Mic access denied or error:", err);
+          alert("Error: Microphone access is required to use the voice assistant.");
+          updateUIState('idle');
+        });
+    }
+
+    function stopAudioRecording() {
+      if (!isRecording) return;
+      isRecording = false;
+
+      // Stop track stream
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+      }
+      if (micProcessor) {
+        micProcessor.disconnect();
+      }
+
+      // Convert buffer chunks to single Float32Array
+      const mergedSamples = mergeBuffers(recordedChunks, recordingLength);
+      const wavBlob = encodeWAV(mergedSamples);
+
+      // Convert to base64 and send to Streamlit
+      const reader = new FileReader();
+      reader.onloadend = function() {
+        const base64Audio = reader.result.split(',')[1];
+        sendMessageToStreamlit({
+          event: "audio_recorded",
+          audio: base64Audio
+        });
+      };
+      reader.readAsDataURL(wavBlob);
+    }
+
+    // Audio Playback
+    function playBase64Audio(base64Data) {
+      if (!base64Data) return;
+      
+      initAudioContext();
+      
+      // Stop active playing source if any
+      if (activeAudioSource) {
+        try {
+          activeAudioSource.stop();
+        } catch(e) {}
+      }
+
+      const binaryStr = window.atob(base64Data);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+
+      // Decode WAV and play it
+      audioContext.decodeAudioData(bytes.buffer)
+        .then(decodedBuffer => {
+          const sourceNode = audioContext.createBufferSource();
+          sourceNode.buffer = decodedBuffer;
+
+          // Wire up audio player through analyser node for WebGL visualizer reactivity
+          sourceNode.connect(analyserNode);
+          analyserNode.connect(audioContext.destination);
+
+          sourceNode.onended = () => {
+            sendMessageToStreamlit({ event: "audio_finished" });
+          };
+
+          sourceNode.start(0);
+          activeAudioSource = sourceNode;
+        })
+        .catch(err => {
+          console.error("Audio playback error:", err);
+          sendMessageToStreamlit({ event: "audio_finished" });
+        });
+    }
+
+    function initAudioContext() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 64;
+      }
+      if (audioContext.state === 'suspended') {
+        audioContext.resume();
+      }
+    }
+
+    // WAV format compilation helpers
+    function mergeBuffers(channelBuffer, length) {
+      const result = new Float32Array(length);
+      let offset = 0;
+      for (let i = 0; i < channelBuffer.length; i++) {
+        const buffer = channelBuffer[i];
+        result.set(buffer, offset);
+        offset += buffer.length;
+      }
+      return result;
+    }
+
+    function writeUTFBytes(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    }
+
+    function encodeWAV(samples) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+
+      writeUTFBytes(view, 0, 'RIFF');
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeUTFBytes(view, 8, 'WAVE');
+      writeUTFBytes(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, 1, true); // 1 Channel (mono)
+      view.setUint32(24, 16000, true); // Sample rate: 16000Hz
+      view.setUint32(28, 16000 * 2, true); // Byte rate (16000 * 2 bytes)
+      view.setUint16(32, 2, true); // Block align (1 channel * 2 bytes/sample)
+      view.setUint16(34, 16, true); // 16 bits per sample
+      writeUTFBytes(view, 36, 'data');
+      view.setUint32(40, samples.length * 2, true);
+
+      let offset = 44;
+      for (let i = 0; i < samples.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+
+      return new Blob([view], { type: 'audio/wav' });
+    }
+
+    // Toggle Mic Event
+    micBtn.addEventListener('click', () => {
+      if (config.status === 'idle') {
+        startAudioRecording();
+      } else if (config.status === 'listening') {
+        stopAudioRecording();
+      }
+    });
+
+    // End/Handoff Event
+    endBtn.addEventListener('click', () => {
+      // Stop playback or recording if running
+      if (isRecording) stopAudioRecording();
+      if (activeAudioSource) {
+        try { activeAudioSource.stop(); } catch(e) {}
+      }
+      sendMessageToStreamlit({ event: "escalate_click" });
+    });
+
+    // Initialize communication with Streamlit
+    initStreamlitComponent();
+  </script>
+</body>
+</html>
