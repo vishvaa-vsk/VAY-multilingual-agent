@@ -176,17 +176,15 @@ def render_vay_ui(state: str, caption_text: str, current_lang: str = "en", key: 
             }}
 
             /* Ambient Horizontal Waveforms Layer */
-            #waveCanvas {{
-                position: absolute;
-                top: 50%;
-                left: 0;
-                width: 100%;
-                height: 180px;
-                transform: translateY(-50%);
-                z-index: 2;
-                pointer-events: none;
-                opacity: 0.75;
-            }}
+            #waveCanvas {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 100%;
+    height: 180px;
+    transform: translateY(-50%);
+    z-index: 2;
+}
 
             /* Glowing Iridescent 3D Orb Sphere */
             .iridescent-orb {{
