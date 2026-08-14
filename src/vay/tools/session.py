@@ -39,7 +39,8 @@ import string
 from dataclasses import dataclass
 from datetime import date
 
-import customer_db
+import vay.tools.db_queries as customer_db
+
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,9 @@ class SessionContext:
     # give the customer one gentle "could you clarify?" re-prompt before ever handing off to
     # a human for a merely-unclear utterance -- see agent_graph.route_after_orchestrator().
     consecutive_unclear: int = 0
+    # Number of turns the caller has used aggressive/abusive language. On the first offence a
+    # warning is spoken in their language; on the second the call is terminated.
+    aggressive_count: int = 0
 
 
 SENSITIVE_DENIAL = (

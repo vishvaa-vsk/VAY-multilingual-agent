@@ -36,9 +36,41 @@ USAGE
 
 from __future__ import annotations
 
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+from vay.graph.utils import localized
+
+MAX_TOOL_ITERATIONS = 6
+
+HANDOFF_MESSAGE_TEMPLATES = {
+    "en": (
+        "I want to make sure I get this right for you, and I'm not fully confident I can "
+        "help with that myself right now. Let me connect you with a live Nexatel agent who "
+        "can take it from here."
+    ),
+    "hi": (
+        "मैं चाहता हूँ कि आपकी सही तरीके से मदद हो, और अभी मुझे पूरा भरोसा नहीं है कि मैं इसे "
+        "खुद संभाल पाऊँगा। मैं आपको Nexatel के एक लाइव एजेंट से जोड़ रहा हूँ जो आगे मदद करेंगे।"
+    ),
+    "ta": (
+        "உங்களுக்குச் சரியாக உதவ விரும்புகிறேன், ஆனால் இதை என்னால் இப்போது சரியாகக் கையாள "
+        "முடியுமா என்பதில் முழு நம்பிக்கை இல்லை. இதைத் தொடர்ந்து கவனிக்க ஒரு நேரடி Nexatel "
+        "முகவரிடம் உங்களை இணைக்கிறேன்."
+    ),
+}
+
+TOOL_LOOP_FAILURE_TEMPLATES = {
+    "en": "I'm not fully sure I can complete that here -- let me connect you with a human agent.",
+    "hi": "मुझे पूरा यकीन नहीं है कि मैं इसे यहाँ पूरा कर पाऊँगा — मैं आपको एक मानव एजेंट से जोड़ता हूँ।",
+    "ta": "இதை என்னால் இங்கு முழுமையாக முடிக்க முடியுமா என்று உறுதியாக இல்லை — நான் உங்களை ஒரு மனித முகவரிடம் இணைக்கிறேன்.",
+}
+
 
 def run_tool_agent(
-    llm: ChatGroq,
+    llm: Any,
+
     tools: list,
     system_prompt: str,
     user_text: str,

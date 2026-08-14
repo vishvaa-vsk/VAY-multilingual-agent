@@ -274,3 +274,4 @@ COVERAGE = [
     ("682001", "Kochi - Ernakulam", "Fair", "4G", "none"),
     ("411001", "Pune - Camp", "Good", "4G/5G", "none"),
 ]
+

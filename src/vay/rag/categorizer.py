@@ -31,34 +31,18 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
-import importlib.util as _ilu
-import sys as _sys
-from pathlib import Path as _Path
-
-_chroma_setup_path = _Path(__file__).parent / "chroma_setup (1).py"
-if not _chroma_setup_path.exists():
-    _chroma_setup_path = _Path(__file__).parent / "chroma_setup.py"
-_spec = _ilu.spec_from_file_location("chroma_setup", str(_chroma_setup_path))
-_mod = _ilu.module_from_spec(_spec)
-_sys.modules.setdefault("chroma_setup", _mod)
-_spec.loader.exec_module(_mod)
-
-
-# ---------------------------------------------------------------------------
-# Force UTF-8 on Windows consoles (cp1252 chokes on Unicode in rich content)
-# ---------------------------------------------------------------------------
 import sys as _sys_utf8
 
 import numpy as np
-from chroma_setup import get_embedding_function
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import normalize
+
+from vay.rag.tfidf import compute_tfidf_descriptions
+from vay.rag.vector_store import get_embedding_function
+
+DEFAULT_TOP_LABELS = 2
+DEFAULT_CLUSTER_K = 8
+
 
 if hasattr(_sys_utf8.stdout, "reconfigure"):
     try:

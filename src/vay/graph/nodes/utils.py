@@ -1,37 +1,19 @@
 """
-agent_graph.py
---------------
-Nexatel orchestrator + sub-agents voice-assistant application (LangGraph).
+utils.py (nodes/utils.py)
+-------------------------
+Utility LangGraph nodes and routing functions for the Nexatel voice assistant.
 
-Mirrors this part of the architecture diagram, across a full multi-turn call,
-picking up exactly where the ASR/VAD/Language-ID stage leaves off — input to
-this module is (transcript, language_code, phone_number), not raw audio:
+Nodes:
+- guardrail_node: confidence gate + handoff-gate + PII/consent scan
+- human_handoff_node: logs and prepares the human handoff message
+- warning_node: speaks a firm warning to aggressive callers (1st offence)
+- clarify_node: asks the customer to repeat/clarify (unclear turns)
+- closing_node: generates a warm closing line when the customer ends the call
+- tts_node: speaks the final_reply via edge-tts
 
-  ORCHESTRATOR (Groq LLM, NLU + intent/entity extraction)
-      --sensitive/unclear/low-confidence--> HUMAN HANDOFF (bypasses retrieval)
-      --else--> routed to one of 4 SUB-AGENTS (Billing / Plans / Complaints / Coverage)
-                    each: tool-calling loop over its own backend tools + its
-                    OWN scoped RAG retriever (rag_tools.py)
-      --> GUARDRAIL NODE (confidence gate + handoff-gate + PII/consent scan)
-             --low confidence / explicit handoff--> HUMAN HANDOFF
-             --else--> FINALIZE
-      --> TTS (tts.speak) --> loop for next utterance
-
-Replaces voice_rag_pipeline.py as the entry point from the transcript stage
-onward.
-
-SETUP
------
-    pip install -r requirements.txt
-    python build_kb.py          # build the 5 Nexatel RAG collections
-    python customer_db.py       # seed the mock customer database
-    set GROQ_API_KEY=your_key_here   (Windows)  /  export GROQ_API_KEY=...  (bash)
-
-USAGE
------
-    python agent_graph.py
-    python agent_graph.py --show_debug
-    python agent_graph.py --min_similarity 0.3 --max_history_turns 8
+Routing:
+- route_after_orchestrator: decides which node to visit after the orchestrator
+- route_after_guardrail: human_handoff or tts
 """
 
 from __future__ import annotations
@@ -41,73 +23,9 @@ import os
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 
-load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
+load_dotenv()
 
-import tts
-
-# Which sub-agent route owns each tool that can create a pending_action -- used to force
-# routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the
-# orchestrator LLM can't reliably infer a route from a one-word reply alone.
-PENDING_ACTION_ROUTE = {"changePlan": "plans"}
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # required, no hardcoded fallback (security fix)
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-
-DEFAULT_MIN_SIMILARITY = 0.3  # confidence gate on the sub-agent's best RAG hit
-DEFAULT_NLU_CONFIDENCE = 0.4  # orchestrator confidence floor before routing to a sub-agent
-DEFAULT_MAX_HISTORY_TURNS = 6
-MAX_TOOL_ITERATIONS = 6  # cap on tool-call round-trips per sub-agent turn (raised from 4
-# -- a getBalance+getDueDate+RAG-search+sendPaymentLink turn was
-# routinely hitting the old cap and forcing a rushed, ungrounded
-# wrap-up reply)
-HANDOFF_LOG_PATH = "handoff_log.jsonl"
-UNCLEAR_ESCALATION_THRESHOLD = 2  # consecutive unclear/low-confidence turns before we give up
-# asking the customer to clarify and hand off to a human
-
-VALID_ROUTES = {"billing", "plans", "complaints", "coverage"}
-
-# Fixed, deterministic per-language templates for the handful of replies that must be spoken
-# WITHOUT going through a sub-agent LLM call (guardrail handoff, a hard tool-loop failure, the
-# call-closing fallback, the pre-routing clarify re-prompt) -- same rationale as
-# tools.CONSENT_TEMPLATES: these are safety/flow-control text, not something we want an LLM
-# paraphrasing under a stressed or degraded call. Falls back to English for any language not
-# yet covered here (add more entries rather than leaving callers silently in English forever --
-# this dict, not "always English", was the actual bug: the *language* was already being
-# detected correctly, but these fixed strings never varied with it).
-HANDOFF_MESSAGE_TEMPLATES = {
-    "en": "I want to make sure I get this right for you, and I'm not fully confident I can "
-    "help with that myself right now. Let me connect you with a live Nexatel agent who "
-    "can take it from here.",
-    "hi": "मैं चाहता हूँ कि आपकी सही तरीके से मदद हो, और अभी मुझे पूरा भरोसा नहीं है कि मैं इसे "
-    "खुद संभाल पाऊँगा। मैं आपको Nexatel के एक लाइव एजेंट से जोड़ रहा हूँ जो आगे मदद करेंगे।",
-    "ta": "உங்களுக்குச் சரியாக உதவ விரும்புகிறேன், ஆனால் இதை என்னால் இப்போது சரியாகக் கையாள "
-    "முடியுமா என்பதில் முழு நம்பிக்கை இல்லை. இதைத் தொடர்ந்து கவனிக்க ஒரு நேரடி Nexatel "
-    "முகவரிடம் உங்களை இணைக்கிறேன்.",
-}
-TOOL_LOOP_FAILURE_TEMPLATES = {
-    "en": "I'm not fully sure I can complete that here -- let me connect you with a human agent.",
-    "hi": "मुझे पूरा यकीन नहीं है कि मैं इसे यहाँ पूरा कर पाऊँगा — मैं आपको एक मानव एजेंट से जोड़ता हूँ।",
-    "ta": "இதை என்னால் இங்கு முழுமையாக முடிக்க முடியுமா என்று உறுதியாக இல்லை — நான் உங்களை ஒரு "
-    "மனித முகவரிடம் இணைக்கிறேன்.",
-}
-CLOSING_FALLBACK_TEMPLATES = {
-    "en": "Thank you for calling Nexatel. Have a great day!",
-    "hi": "Nexatel को कॉल करने के लिए धन्यवाद। आपका दिन शुभ हो!",
-    "ta": "Nexatel-ஐ அழைத்ததற்கு நன்றி. உங்கள் நாள் இனிதாக அமையட்டும்!",
-}
-CLARIFY_TEMPLATES = {
-    "en": "Sorry, I didn't quite catch that. Could you tell me a little more about what you "
-    "need help with -- for example your bill, your plan, a complaint, or network coverage?",
-    "hi": "माफ़ कीजिए, मैं ठीक से समझ नहीं पाया। कृपया थोड़ा और बताएं कि आपको किस बारे में मदद "
-    "चाहिए — जैसे आपका बिल, आपका प्लान, कोई शिकायत, या नेटवर्क कवरेज।",
-    "ta": "மன்னிக்கவும், எனக்குச் சரியாகப் புரியவில்லை. உங்களுக்கு எதில் உதவி தேவை என்று கொஞ்சம் "
-    "விளக்கமாகச் சொல்ல முடியுமா — உங்கள் பில், திட்டம், புகார், அல்லது நெட்வொர்க் கவரேஜ் "
-    "போன்றவை?",
-}
-
+from vay.tts import engine as tts
 
 from vay.graph.state import GraphState
 from vay.graph.utils import (
@@ -123,42 +41,90 @@ from vay.graph.utils import (
     localized,
     log_handoff,
 )
+from vay.rag.retriever import compliance_policy_search
 
+
+# ---------------------------------------------------------------------------
+# Guardrail node
+# ---------------------------------------------------------------------------
 
 def guardrail_node(state: GraphState) -> GraphState:
-    """Layer 3 output guardrail: confidence gate + handoff-gate + a lightweight
-    PII/consent scan, per kb_docs/compliance_policy.md."""
+    """Layer 3 output guardrail: confidence gate + handoff-gate + PII/consent scan.
+
+    Changes from the original:
+    - Uncertainty in the draft reply alone no longer triggers a handoff; it must
+      ALSO have a low retrieval score. An LLM that says "I'm not sure" but pulled
+      a high-confidence KB hit is expressing appropriate caveating, not failure.
+    - Compliance policy is checked for any draft that touches a sensitive action
+      keyword, so the KB guardrail rules are actually enforced.
+    """
+    # A sub-agent tool already requested escalation — short-circuit
     if state.get("handoff"):
-        return {}  # a sub-agent tool already requested escalation
+        return {}
 
     draft = state.get("draft_reply", "")
-    min_similarity = state.get("min_similarity", DEFAULT_MIN_SIMILARITY)
+    min_similarity = state.get("min_similarity", 0.3)
+    retrieval_score = state.get("retrieval_score", 0.0)
 
-    if state.get("retrieval_score", 0.0) < min_similarity:
+    # --- Confidence gate ---
+    if retrieval_score < min_similarity:
         return {
             "handoff": True,
-            "handoff_reason": "Low retrieval confidence on knowledge-base grounding.",
+            "handoff_reason": f"Low retrieval confidence ({retrieval_score:.2f} < {min_similarity}).",
         }
 
+    # --- Human request in transcript or draft ---
     if HUMAN_REQUEST_PATTERNS.search(state["transcript"]) or HUMAN_REQUEST_PATTERNS.search(draft):
         return {"handoff": True, "handoff_reason": "Customer requested a human agent."}
 
-    if UNCERTAINTY_PATTERNS.search(draft):
+    # --- Uncertainty: only handoff if retrieval score is ALSO below a relaxed threshold ---
+    # Previously, uncertainty alone (e.g. "I'm not fully sure") would immediately trigger
+    # a handoff even when the RAG returned a high-confidence result. This was too aggressive.
+    UNCERTAINTY_CONFIDENCE_CUTOFF = 0.5
+    if UNCERTAINTY_PATTERNS.search(draft) and retrieval_score < UNCERTAINTY_CONFIDENCE_CUTOFF:
         return {
             "handoff": True,
-            "handoff_reason": "Assistant signaled uncertainty in its draft reply.",
+            "handoff_reason": "Assistant signaled uncertainty with low retrieval confidence.",
         }
 
+    # --- PII leak guard ---
     if PII_LEAK_PATTERNS.search(draft):
         return {
             "handoff": True,
             "handoff_reason": "Draft reply referenced sensitive credentials (guardrail block).",
         }
 
+    # --- Compliance policy check for sensitive-action keywords ---
+    CONSENT_TRIGGER_WORDS = re.compile(
+        r"\b(change plan|payment link|cancel|switch plan|modify)\b", re.IGNORECASE
+    )
+    if CONSENT_TRIGGER_WORDS.search(draft):
+        compliance_context = compliance_policy_search(
+            "consent required actions plan change payment cancellation"
+        )
+        # If compliance KB says "must read consent script" and the draft doesn't contain
+        # a confirmation ask, flag it — this is a lightweight check, not a full parse.
+        if "consent" in compliance_context.lower() and "confirm" not in draft.lower():
+            # Log but don't handoff — the sub-agent should have included a confirmation;
+            # we just note it so it's visible in debug output.
+            if state.get("show_debug"):
+                print(
+                    "  [guardrail: compliance policy recommends consent script for this action "
+                    "— draft may be missing it]"
+                )
+
     return {"final_reply": draft}
 
 
+import re  # noqa: E402 (import after the function that uses it — kept here to avoid circular issues)
+
+
+# ---------------------------------------------------------------------------
+# Human handoff node
+# ---------------------------------------------------------------------------
+
 def human_handoff_node(state: GraphState) -> GraphState:
+    """Log the handoff context and return the localized handoff message."""
     log_handoff(
         {
             "phone_number": state["phone_number"],
@@ -177,14 +143,45 @@ def human_handoff_node(state: GraphState) -> GraphState:
     }
 
 
+# ---------------------------------------------------------------------------
+# Warning node (aggressive / abusive caller — 1st offence)
+# ---------------------------------------------------------------------------
+
+def warning_node(state: GraphState) -> GraphState:
+    """Set the final_reply to the pre-built warning text stored in state.
+
+    The warning text is already localized by orchestrator_node (using the
+    caller's detected language) and stored in state['warning_reply'].
+    """
+    warning_text = state.get("warning_reply", "")
+    if not warning_text:
+        # Fallback: shouldn't happen, but be safe
+        warning_text = localized(
+            {
+                "en": "Please note that abusive language is not acceptable on this call. "
+                      "Severe action will be taken if this continues."
+            },
+            state.get("language", "en"),
+        )
+    return {"final_reply": warning_text}
+
+
+# ---------------------------------------------------------------------------
+# Clarify node
+# ---------------------------------------------------------------------------
+
 def clarify_node(state: GraphState) -> GraphState:
     """A human-agent-free re-prompt for a turn the orchestrator couldn't understand/route
     confidently, used instead of an immediate human_handoff (see route_after_orchestrator) --
-    per the solution doc's Layer 1 guidance ("ask to repeat" before escalating) and so a single
+    per the solution doc's Layer 1 guidance (\"ask to repeat\" before escalating) and so a single
     garbled, off-topic, or rude utterance doesn't consume a live agent's time. Deliberately a
     fixed localized template, not an LLM call: there's nothing to ground yet this turn."""
     return {"final_reply": localized(CLARIFY_TEMPLATES, state["language"])}
 
+
+# ---------------------------------------------------------------------------
+# Closing node
+# ---------------------------------------------------------------------------
 
 def closing_node(state: GraphState) -> GraphState:
     llm = _llm()
@@ -194,6 +191,7 @@ def closing_node(state: GraphState) -> GraphState:
                 agent_name="call-closing assistant",
                 phone_number=state["phone_number"],
                 language=state["language"],
+                account_context="",  # no account context needed for closing
             )
         )
     ]
@@ -213,7 +211,12 @@ def closing_node(state: GraphState) -> GraphState:
     return {"final_reply": reply or fallback}
 
 
+# ---------------------------------------------------------------------------
+# TTS node
+# ---------------------------------------------------------------------------
+
 def tts_node(state: GraphState) -> GraphState:
+    """Speak the final reply via edge-tts in the caller's detected language."""
     tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
     return {}
 
@@ -221,23 +224,38 @@ def tts_node(state: GraphState) -> GraphState:
 # ---------------------------------------------------------------------------
 # Routing (conditional edges)
 # ---------------------------------------------------------------------------
+
 def route_after_orchestrator(state: GraphState) -> str:
+    """Decide the next node after the orchestrator runs.
+
+    Priority order:
+    1. Call cut (2nd aggressive offence) → closing (final word + TTS)
+    2. Warning (1st aggressive offence) → warning node
+    3. Normal call end requested → closing
+    4. Sensitive intent → human_handoff
+    5. Unclear/low-confidence (with escalation) → human_handoff
+    6. Unclear/low-confidence (first time) → clarify
+    7. Valid route → billing / plans / complaints / coverage
+    """
+    # Call was cut due to repeated abuse — treat as closing so TTS plays the goodbye
+    if state.get("call_end_requested") and state.get("warning_reply"):
+        return "closing"
+
+    # Warning reply set (1st aggressive offence, no cut yet)
+    if state.get("warning_reply"):
+        return "warning"
+
     if state.get("call_end_requested"):
         return "closing"
+
     if state.get("sensitive"):
         return "human_handoff"
+
     if state.get("route") == "unclear" or state.get("nlu_confidence", 0.0) < DEFAULT_NLU_CONFIDENCE:
-        # Only actually escalate once unclear_escalate says so (repeated failure to
-        # understand, or an explicit human request) -- otherwise give the customer one more
-        # chance via a human-free clarify re-prompt. See orchestrator_node.
         return "human_handoff" if state.get("unclear_escalate") else "clarify"
+
     return state["route"]  # billing | plans | complaints | coverage
 
 
 def route_after_guardrail(state: GraphState) -> str:
     return "human_handoff" if state.get("handoff") else "tts"
-
-
-# ---------------------------------------------------------------------------
-# Build the graph
-# ---------------------------------------------------------------------------

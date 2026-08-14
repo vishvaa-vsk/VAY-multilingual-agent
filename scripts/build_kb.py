@@ -2,26 +2,22 @@
 build_kb.py
 
 Run this file to (re)build the entire Nexatel vector store: ingests each of
-the 5 kb_docs/*.md knowledge-base documents into its own scoped ChromaDB
+the 5 data/kb/*.md knowledge-base documents into its own scoped ChromaDB
 collection (see chroma_setup.KB_COLLECTIONS), with domain-relevant guided
 category labels so retrieval/category filtering has useful signal from the
 start.
 
-    python build_kb.py            # (re)ingest all 5 KBs (idempotent upsert)
-    python build_kb.py --reset    # wipe each collection first, then ingest
-
-Each KB document is chunked, TF-IDF described, and category-tagged via the
-existing content_manager.py pipeline (create_from_markdown), then upserted
-into ChromaDB with the all-MiniLM-L6-v2 embedding model (chroma_setup.py).
+    python scripts/build_kb.py            # (re)ingest all 5 KBs (idempotent upsert)
+    python scripts/build_kb.py --reset    # wipe each collection first, then ingest
 """
 
 import argparse
 from pathlib import Path
 
-import chroma_setup
-import content_manager
+from vay.rag import manager as content_manager
+from vay.rag import vector_store as chroma_setup
 
-KB_DOCS_DIR = Path(__file__).parent / "kb_docs"
+KB_DOCS_DIR = Path(__file__).parent.parent / "data" / "kb"
 
 # collection name -> (markdown filename, human title, guided category labels)
 KB_SPEC = {
@@ -69,7 +65,7 @@ def build(reset: bool = False) -> None:
         markdown = md_path.read_text(encoding="utf-8")
         result = content_manager.create_from_markdown(
             markdown=markdown,
-            source_name=f"kb_docs/{filename}",
+            source_name=f"data/kb/{filename}",
             title=title,
             collection_name=collection_name,
             category_labels=labels,

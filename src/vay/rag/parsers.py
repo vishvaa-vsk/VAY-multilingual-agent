@@ -31,25 +31,8 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
-import importlib.util as _ilu
-import sys as _sys
-from pathlib import Path as _Path
-
-_chroma_setup_path = _Path(__file__).parent / "chroma_setup (1).py"
-if not _chroma_setup_path.exists():
-    _chroma_setup_path = _Path(__file__).parent / "chroma_setup.py"
-_spec = _ilu.spec_from_file_location("chroma_setup", str(_chroma_setup_path))
-_mod = _ilu.module_from_spec(_spec)
-_sys.modules.setdefault("chroma_setup", _mod)
-_spec.loader.exec_module(_mod)
-
 import re
+
 
 # ---------------------------------------------------------------------------
 # Force UTF-8 on Windows consoles (cp1252 chokes on Unicode in rich content)
@@ -57,10 +40,21 @@ import re
 import sys as _sys_utf8
 from pathlib import Path
 
-import html2text
-import requests
-from bs4 import BeautifulSoup
-from pypdf import PdfReader
+try:
+    import html2text
+    import requests
+    from bs4 import BeautifulSoup
+except ImportError:
+    html2text = None
+    requests = None
+    BeautifulSoup = None
+
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
 
 if hasattr(_sys_utf8.stdout, "reconfigure"):
     try:
