@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vay"
+version = "0.1.0"
+description = "Multilingual GenAI Voice Assistant for Customer Care (Tamil, Hindi, English)"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "VAY Team" }
+]
+dependencies = [
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "torch>=2.2.0",
+    "torchaudio>=2.2.0",
+    "transformers>=4.40.0",
+    "soundfile>=0.12.1",
+    "librosa>=0.10.1",
+    "onnxruntime>=1.17.0",
+    "langgraph>=0.1.5",
+    "langchain>=0.2.0",
+    "langchain-community>=0.2.0",
+    "chromadb>=0.5.0",
+    "rank-bm25>=0.2.2",
+    "gtts>=2.5.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "gradio>=4.25.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.10.0",
+    "ruff>=0.4.0",
+    "pytest>=8.1.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vay"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# Type safety disabled per user request
+
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
