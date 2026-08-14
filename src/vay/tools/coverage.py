@@ -34,10 +34,12 @@ verifying the *customer's own next-turn transcript* contains an affirmation
 
 from __future__ import annotations
 
-import customer_db
+import vay.tools.db_queries as customer_db
+
 from langchain_core.tools import tool
 
-from vay.tools.session import DEVICE_SETTINGS, SessionContext
+from vay.tools.session import SessionContext
+
 
 # ---------------------------------------------------------------------------
 DEVICE_SETTINGS = {

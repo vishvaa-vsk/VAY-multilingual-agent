@@ -43,7 +43,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
-import tts
+from vay.tts import engine as tts
+
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the

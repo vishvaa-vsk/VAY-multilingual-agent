@@ -45,10 +45,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
-from tools import (
-    SessionContext,
-)
-
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the
 # orchestrator LLM can't reliably infer a route from a one-word reply alone.

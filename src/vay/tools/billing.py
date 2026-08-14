@@ -39,7 +39,8 @@ import random
 import string
 from datetime import date, datetime, timedelta
 
-import customer_db
+import vay.tools.db_queries as customer_db
+
 from langchain_core.tools import tool
 
 from vay.tools.session import SENSITIVE_DENIAL, SessionContext

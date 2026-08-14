@@ -171,6 +171,10 @@ def build_graph():
     return graph.compile()
 
 
+build_voice_assistant_graph = build_graph
+
+
+
 # ---------------------------------------------------------------------------
 # Main loop -- one run = one continuous call, looping utterance by utterance
 # ---------------------------------------------------------------------------

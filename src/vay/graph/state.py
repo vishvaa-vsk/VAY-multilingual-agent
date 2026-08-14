@@ -136,6 +136,10 @@ class GraphState(TypedDict, total=False):
     # skipping the clarify re-prompt and handing off directly
 
 
+AgentState = GraphState
+
+
+
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------

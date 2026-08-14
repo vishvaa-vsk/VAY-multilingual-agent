@@ -39,7 +39,8 @@ import string
 from dataclasses import dataclass
 from datetime import date
 
-import customer_db
+import vay.tools.db_queries as customer_db
+
 
 
 # ---------------------------------------------------------------------------

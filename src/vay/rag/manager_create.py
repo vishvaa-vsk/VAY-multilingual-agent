@@ -31,35 +31,22 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
-import importlib.util as _ilu
-import sys as _sys
-from pathlib import Path as _Path
-
-_chroma_setup_path = _Path(__file__).parent / "chroma_setup (1).py"
-if not _chroma_setup_path.exists():
-    _chroma_setup_path = _Path(__file__).parent / "chroma_setup.py"
-_spec = _ilu.spec_from_file_location("chroma_setup", str(_chroma_setup_path))
-_mod = _ilu.module_from_spec(_spec)
-_sys.modules.setdefault("chroma_setup", _mod)
-_spec.loader.exec_module(_mod)
-
 import hashlib
 import re
-
-# ---------------------------------------------------------------------------
-# Force UTF-8 on Windows consoles (cp1252 chokes on Unicode in rich content)
-# ---------------------------------------------------------------------------
 import sys as _sys_utf8
 from pathlib import Path
 from urllib.parse import urlparse
 
-from chroma_setup import COLLECTION_NAME as _DEFAULT_COLLECTION
+from vay.rag.manager_ingest import _ingest_markdown
+from vay.rag.parsers import pdf_to_markdown, url_to_markdown
+from vay.rag.vector_store import COLLECTION_NAME as _DEFAULT_COLLECTION
+from vay.rag.vector_store import get_collection
+
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 150
+DEFAULT_TOP_LABELS = 2
+DEFAULT_CLUSTER_K = 8
+MD_OUTPUT_DIR = "kb_docs"
 
 if hasattr(_sys_utf8.stdout, "reconfigure"):
     try:
@@ -67,7 +54,6 @@ if hasattr(_sys_utf8.stdout, "reconfigure"):
     except Exception:
         pass
 
-from vay.rag.parsers import pdf_to_markdown, url_to_markdown
 
 
 def _slugify(source: str) -> str:

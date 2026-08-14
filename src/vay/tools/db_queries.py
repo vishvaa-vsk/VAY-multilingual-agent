@@ -13,6 +13,20 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
+    return dict(row) if row is not None else None
+
+
+SLA_DAYS = {
+    "billing": 3,
+    "network": 2,
+    "technical": 2,
+    "service_request": 1,
+    "general": 3,
+}
+
+
+
 def _iso_days_from_today(offset_days: int) -> str:
     return (date.today() + timedelta(days=offset_days)).isoformat()
 
