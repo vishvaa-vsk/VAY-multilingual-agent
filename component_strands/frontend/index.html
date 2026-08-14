@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -26,7 +27,8 @@
       padding: 0;
     }
 
-    body, html {
+    body,
+    html {
       width: 100%;
       height: 100%;
       overflow: hidden;
@@ -98,6 +100,7 @@
       pointer-events: auto;
     }
 
+
     .mic-button-container {
       position: relative;
       width: 120px;
@@ -105,6 +108,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      flex-shrink: 0;
     }
 
     .pulse-ring {
@@ -123,9 +127,11 @@
       border-color: #f97316;
       animation: pulse-out 2s infinite ease-out;
     }
+
     .status-listening .pulse-ring:nth-child(2) {
       animation-delay: 0.6s;
     }
+
     .status-listening .pulse-ring:nth-child(3) {
       animation-delay: 1.2s;
     }
@@ -136,6 +142,7 @@
         opacity: 0.8;
         filter: blur(1px);
       }
+
       100% {
         transform: scale(2.2);
         opacity: 0;
@@ -171,50 +178,85 @@
 
     /* Status specific styles */
     .status-idle .mic-button {
-      box-shadow: 0 0 20px var(--glow-idle), inset 0 0 10px rgba(255,255,255,0.05);
+      box-shadow: 0 0 20px var(--glow-idle), inset 0 0 10px rgba(255, 255, 255, 0.05);
     }
+
     .status-idle .mic-button:hover {
       transform: scale(1.08);
-      box-shadow: 0 0 35px rgba(255,255,255,0.4);
+      box-shadow: 0 0 35px rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.1);
     }
 
     .status-listening .mic-button {
-      background: linear-gradient(135deg, rgba(249,115,22,0.2), rgba(249,115,22,0.05));
-      border-color: rgba(249,115,22,0.4);
-      box-shadow: 0 0 30px var(--glow-listening), inset 0 0 15px rgba(249,115,22,0.2);
+      background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(249, 115, 22, 0.05));
+      border-color: rgba(249, 115, 22, 0.4);
+      box-shadow: 0 0 30px var(--glow-listening), inset 0 0 15px rgba(249, 115, 22, 0.2);
       transform: scale(1.05);
     }
+
+    .status-listening .mic-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 45px var(--glow-listening), inset 0 0 20px rgba(249, 115, 22, 0.3);
+      background: linear-gradient(135deg, rgba(249, 115, 22, 0.35), rgba(249, 115, 22, 0.1));
+    }
+
     .status-listening .mic-button svg {
       fill: #f97316;
       transform: scale(1.1);
     }
 
     .status-thinking .mic-button {
-      background: linear-gradient(135deg, rgba(124,58,237,0.1), rgba(124,58,237,0.02));
-      border-color: rgba(124,58,237,0.3);
+      background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(124, 58, 237, 0.02));
+      border-color: rgba(124, 58, 237, 0.3);
       box-shadow: 0 0 25px var(--glow-thinking);
       transform: scale(0.95);
       animation: thinking-breathing 1.5s infinite alternate ease-in-out;
     }
+
+    .status-thinking .mic-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 40px var(--glow-thinking);
+      background: linear-gradient(135deg, rgba(124, 58, 237, 0.25), rgba(124, 58, 237, 0.1));
+      animation-play-state: paused;
+    }
+
     .status-thinking .mic-button svg {
       fill: #7c3aed;
       animation: spinning-icon 2s infinite linear;
     }
 
     @keyframes thinking-breathing {
-      0% { box-shadow: 0 0 15px rgba(124,58,237,0.3); }
-      100% { box-shadow: 0 0 35px rgba(124,58,237,0.8); }
+      0% {
+        box-shadow: 0 0 15px rgba(124, 58, 237, 0.3);
+      }
+
+      100% {
+        box-shadow: 0 0 35px rgba(124, 58, 237, 0.8);
+      }
     }
+
     @keyframes spinning-icon {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
     }
 
     .status-speaking .mic-button {
-      background: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(6,182,212,0.05));
-      border-color: rgba(6,182,212,0.4);
-      box-shadow: 0 0 30px var(--glow-speaking), inset 0 0 15px rgba(6,182,212,0.1);
+      background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(6, 182, 212, 0.05));
+      border-color: rgba(6, 182, 212, 0.4);
+      box-shadow: 0 0 30px var(--glow-speaking), inset 0 0 15px rgba(6, 182, 212, 0.1);
     }
+
+    .status-speaking .mic-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 45px var(--glow-speaking), inset 0 0 20px rgba(6, 182, 212, 0.25);
+      background: linear-gradient(135deg, rgba(6, 182, 212, 0.35), rgba(6, 182, 212, 0.1));
+    }
+
     .status-speaking .mic-button svg {
       fill: #06b6d4;
     }
@@ -224,11 +266,19 @@
       border-color: rgba(239, 68, 68, 0.5);
       box-shadow: 0 0 30px rgba(239, 68, 68, 0.5);
     }
+
+    .status-handoff .mic-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 40px rgba(239, 68, 68, 0.7);
+      background: rgba(239, 68, 68, 0.3);
+    }
+
     .status-handoff .mic-button svg {
       fill: #ef4444;
     }
 
     .status-label {
+      display: none;
       margin-top: 16px;
       font-size: 14px;
       font-weight: 600;
@@ -239,26 +289,46 @@
       transition: all 0.3s ease;
     }
 
-    .status-idle .status-label { color: var(--text-sub); }
-    .status-listening .status-label { color: #f97316; text-shadow: 0 0 10px rgba(249,115,22,0.3); }
-    .status-thinking .status-label { color: #7c3aed; text-shadow: 0 0 10px rgba(124,58,237,0.3); }
-    .status-speaking .status-label { color: #06b6d4; text-shadow: 0 0 10px rgba(6,182,212,0.3); }
-    .status-handoff .status-label { color: #ef4444; text-shadow: 0 0 10px rgba(239,68,68,0.3); }
+    .status-idle .status-label {
+      color: var(--text-sub);
+    }
+
+    .status-listening .status-label {
+      color: #f97316;
+      text-shadow: 0 0 10px rgba(249, 115, 22, 0.3);
+    }
+
+    .status-thinking .status-label {
+      color: #7c3aed;
+      text-shadow: 0 0 10px rgba(124, 58, 237, 0.3);
+    }
+
+    .status-speaking .status-label {
+      color: #06b6d4;
+      text-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
+    }
+
+    .status-handoff .status-label {
+      color: #ef4444;
+      text-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+    }
 
     .bottom-controls {
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       align-items: center;
+      justify-content: center;
       width: 100%;
-      max-width: 320px;
+      max-width: 450px;
       gap: 16px;
       pointer-events: auto;
       margin-bottom: 10px;
     }
 
     .control-btn {
-      width: 100%;
-      padding: 12px 24px;
+      flex: 0 0 120px;
+      width: 120px;
+      padding: 12px 16px;
       border-radius: 12px;
       font-size: 14px;
       font-weight: 600;
@@ -284,7 +354,7 @@
     .control-btn.btn-danger {
       background: rgba(239, 68, 68, 0.15);
       border-color: rgba(239, 68, 68, 0.3);
-      color: #ef4444;
+      color: #ffffff;
     }
 
     .control-btn.btn-danger:hover {
@@ -310,10 +380,16 @@
       transition: height 0.1s ease;
     }
 
-    .status-listening .wave-bar { background-color: #f97316; }
-    .status-speaking .wave-bar { background-color: #06b6d4; }
+    .status-listening .wave-bar {
+      background-color: #f97316;
+    }
+
+    .status-speaking .wave-bar {
+      background-color: #06b6d4;
+    }
   </style>
 </head>
+
 <body class="status-idle" id="body-root">
 
   <div class="strands-container" id="strands-ctn"></div>
@@ -325,19 +401,8 @@
     </div>
 
     <div class="controls-center">
-      <div class="mic-button-container" id="pulse-container">
-        <div class="pulse-ring"></div>
-        <div class="pulse-ring"></div>
-        <div class="pulse-ring"></div>
-        <button class="mic-button" id="mic-btn" title="Toggle Microphone">
-          <svg viewBox="0 0 24 24" id="mic-svg">
-            <!-- Default Mic Icon -->
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
-          </svg>
-        </button>
-      </div>
       <div class="status-label" id="status-txt">READY</div>
-      
+
       <div class="waveform-visualizer" id="wave-vis" style="display: none;">
         <div class="wave-bar" style="height: 6px;"></div>
         <div class="wave-bar" style="height: 12px;"></div>
@@ -350,11 +415,20 @@
     </div>
 
     <div class="bottom-controls">
+      <div class="mic-button-container" id="pulse-container">
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <div class="pulse-ring"></div>
+        <button class="mic-button" id="mic-btn" title="Toggle Microphone">
+          <svg viewBox="0 0 24 24" id="mic-svg">
+            <!-- Default Mic Icon -->
+            <path
+              d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z" />
+          </svg>
+        </button>
+      </div>
       <button class="control-btn btn-danger" id="end-btn">
-        <svg style="width:16px;height:16px;" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/>
-        </svg>
-        End & Escalate Session
+        End
       </button>
     </div>
   </div>
@@ -626,7 +700,7 @@
         subStatusTxt.textContent = 'Escalating to human agent...';
         waveVis.style.display = 'none';
       }
-      
+
       // Update iframe height automatically
       sendFrameHeight();
     }
@@ -731,7 +805,7 @@
     let animateId = 0;
     const update = t => {
       animateId = requestAnimationFrame(update);
-      
+
       // Interpolate audio reactivity modifiers smoothly
       currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.15;
       currentAmpMod += (targetAmpMod - currentAmpMod) * 0.15;
@@ -740,11 +814,11 @@
       program.uniforms.uColors.value = buildPalette(config.colors);
       program.uniforms.uColorCount.value = Math.min(config.colors.length, MAX_COLORS);
       program.uniforms.uStrandCount.value = Math.min(Math.max(Math.round(config.count), 1), MAX_STRANDS);
-      
+
       // Combine base properties with live audio mod
       program.uniforms.uSpeed.value = config.speed + currentSpeedMod;
       program.uniforms.uAmplitude.value = config.amplitude + currentAmpMod;
-      
+
       program.uniforms.uWaviness.value = config.waviness;
       program.uniforms.uThickness.value = config.thickness;
       program.uniforms.uGlow.value = config.glow;
@@ -778,7 +852,7 @@
           sum += dataArray[i];
         }
         const avg = sum / dataArray.length;
-        
+
         // Drive wave visualizer UI bars
         for (let i = 0; i < waveBars.length; i++) {
           const index = Math.floor((i / waveBars.length) * dataArray.length * 0.4); // Focus on mid-bass frequencies
@@ -800,7 +874,7 @@
     window.addEventListener("message", (event) => {
       if (event.data.type === "streamlit:render") {
         const args = event.data.args;
-        
+
         // Update local config variables from Python
         for (const key in args) {
           if (args.hasOwnProperty(key)) {
@@ -845,9 +919,9 @@
     // Audio Capture and WAV Encoder Logic
     function startAudioRecording() {
       if (isRecording) return;
-      
+
       initAudioContext();
-      
+
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
           micStream = stream;
@@ -860,11 +934,11 @@
 
           // We use script processor for direct simple floating point manipulation
           micProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-          
-          micProcessor.onaudioprocess = function(e) {
+
+          micProcessor.onaudioprocess = function (e) {
             if (!isRecording) return;
             const inputData = e.inputBuffer.getChannelData(0);
-            
+
             // Push clone to buffer
             recordedChunks.push(new Float32Array(inputData));
             recordingLength += inputData.length;
@@ -901,7 +975,7 @@
 
       // Convert to base64 and send to Streamlit
       const reader = new FileReader();
-      reader.onloadend = function() {
+      reader.onloadend = function () {
         const base64Audio = reader.result.split(',')[1];
         sendMessageToStreamlit({
           event: "audio_recorded",
@@ -914,14 +988,14 @@
     // Audio Playback
     function playBase64Audio(base64Data) {
       if (!base64Data) return;
-      
+
       initAudioContext();
-      
+
       // Stop active playing source if any
       if (activeAudioSource) {
         try {
           activeAudioSource.stop();
-        } catch(e) {}
+        } catch (e) { }
       }
 
       const binaryStr = window.atob(base64Data);
@@ -1023,13 +1097,29 @@
       // Stop playback or recording if running
       if (isRecording) stopAudioRecording();
       if (activeAudioSource) {
-        try { activeAudioSource.stop(); } catch(e) {}
+        try { activeAudioSource.stop(); } catch (e) { }
       }
-      sendMessageToStreamlit({ event: "escalate_click" });
+
+      // Cleanly release AudioContext asynchronously
+      if (audioContext) {
+        try {
+          audioContext.close();
+        } catch (e) {
+          console.error("Error calling close on AudioContext:", e);
+        }
+        audioContext = null;
+        analyserNode = null;
+      }
+
+      // Notify Streamlit after a small delay to allow resources to start releasing
+      setTimeout(() => {
+        sendMessageToStreamlit({ event: "escalate_click" });
+      }, 50);
     });
 
     // Initialize communication with Streamlit
     initStreamlitComponent();
   </script>
 </body>
+
 </html>
