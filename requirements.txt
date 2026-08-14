@@ -1,0 +1,17 @@
+requests
+beautifulsoup4
+html2text
+chromadb
+sentence-transformers
+pypdf
+nltk
+langdetect
+scikit-learn
+numpy
+langgraph
+langchain
+langchain-core
+langchain-groq
+edge-tts
+playsound3
+python-dotenv

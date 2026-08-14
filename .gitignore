@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+output.mp3
+handoff_log.jsonl
+chroma_db/
+nexatel_customers.db
