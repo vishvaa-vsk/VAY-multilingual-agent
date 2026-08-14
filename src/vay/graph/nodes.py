@@ -33,11 +33,31 @@ def asr_node(state: AgentState) -> AgentState:
 
 
 def normalization_node(state: AgentState) -> AgentState:
-    """Normalization Node: Clean transcript and detect intent & entities."""
+    """Normalization Node: Clean transcript and detect intent & entities.
+
+    Passes previous_intent and previous_normalized from conversation_history
+    into the LLM normalizer so it can resolve cross-turn coreferences
+    (e.g. "it", "that plan", "same issue") before the orchestrator runs.
+    """
     asr_res = state.get("asr_result")
     raw_text = asr_res.raw_text if asr_res else ""
     lang = state.get("detected_language", "en")
-    struct_tx = normalizer.normalize(raw_text, lang)
+
+    # Extract previous turn context from conversation history for coreference resolution.
+    # The history is a list of LangChain messages; we look for the last StructuredTranscript
+    # stored on state (if any) from the prior iteration of the call loop.
+    previous_intent: str | None = None
+    previous_normalized: str | None = None
+    prev_tx = state.get("structured_transcript")
+    if prev_tx is not None:
+        previous_intent = getattr(prev_tx, "intent", None)
+        previous_normalized = getattr(prev_tx, "normalized_text", None)
+
+    struct_tx = normalizer.normalize(
+        raw_text, lang,
+        previous_intent=previous_intent,
+        previous_normalized=previous_normalized,
+    )
     state["structured_transcript"] = struct_tx
 
     # Check for sensitive / restricted intent
@@ -82,8 +102,14 @@ def llm_generation_node(state: AgentState) -> AgentState:
 
 
 def tts_node(state: AgentState) -> AgentState:
-    """TTS Node: Synthesize response audio in detected language."""
-    state["output_audio_path"] = "/tmp/output_response.mp3"
+    """TTS Node: Synthesize and play the response audio in detected language."""
+    from vay.tts import engine as tts_engine
+
+    lang = state.get("detected_language", "en")
+    text = state.get("llm_response_text", "")
+    if text:
+        tts_engine.speak(text, lang=lang)
+    state["output_audio_path"] = "output.mp3"
     return state
 
 

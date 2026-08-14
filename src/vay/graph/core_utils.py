@@ -116,6 +116,89 @@ def localized(templates: dict, language: str) -> str:
     return templates.get(language, templates["en"])
 
 
+# ---------------------------------------------------------------------------
+# Aggressive / abusive caller templates (spoken in the user's language).
+# First offence: a firm warning. Second offence: the call is terminated.
+# These are deterministic hand-written strings, NOT LLM-generated, so they
+# cannot be side-stepped by a hallucinating model.
+# ---------------------------------------------------------------------------
+AGGRESSIVE_WARNING_TEMPLATES: dict[str, str] = {
+    "en": "Please note that abusive or threatening language is not acceptable on this call. "
+          "Severe action will be taken if this continues.",
+    "hi": "कृपया ध्यान दें कि इस कॉल पर अपमानजनक या धमकीभरी भाषा स्वीकार्य नहीं है। "
+          "यदि यह जारी रहता है तो गंभीर कार्रवाई की जाएगी।",
+    "ta": "இந்த அழைப்பில் தகாத அல்லது அச்சுறுத்தும் மொழி ஏற்றுக்கொள்ளப்படாது என்பதை தயவுசெய்து "
+          "கவனிக்கவும். இது தொடர்ந்தால் கடுமையான நடவடிக்கை எடுக்கப்படும்.",
+    "fr": "Veuillez noter que les propos abusifs ou menaçants ne sont pas acceptables lors de cet "
+          "appel. Des mesures sévères seront prises si cela continue.",
+    "de": "Bitte beachten Sie, dass beleidigender oder bedrohlicher Sprachgebrauch in diesem Gespräch "
+          "nicht akzeptabel ist. Bei Fortsetzung werden schwerwiegende Maßnahmen ergriffen.",
+    "es": "Tenga en cuenta que el lenguaje abusivo o amenazante no es aceptable en esta llamada. "
+          "Se tomarán medidas severas si esto continúa.",
+    "ja": "この通話では、侮辱的または脅迫的な言葉は許容されません。このような言動が続く場合は、"
+          "厳重な措置が講じられます。",
+    "ko": "이 통화에서 모욕적이거나 위협적인 언어는 허용되지 않습니다. "
+          "계속될 경우 엄중한 조치가 취해질 것입니다.",
+    "zh": "请注意，此通话中不允许使用辱骂或威胁性语言。如果继续，将采取严厉措施。",
+    "it": "Si prega di notare che il linguaggio offensivo o minaccioso non è accettabile durante questa "
+          "chiamata. Verranno prese misure severe se questo continua.",
+    "ru": "Обратите внимание, что оскорбительные или угрожающие выражения недопустимы в этом звонке. "
+          "Если это продолжится, будут приняты серьёзные меры.",
+    "ar": "يُرجى العلم بأن اللغة المسيئة أو التهديدية غير مقبولة في هذه المكالمة. "
+          "سيتم اتخاذ إجراءات صارمة إذا استمر ذلك.",
+    "te": "ఈ కాల్‌లో అసభ్యంగా లేదా బెదిరింపు భాషను ఉపయోగించడం ఆమోదయోగ్యం కాదు. "
+          "ఇది కొనసాగితే తీవ్రమైన చర్య తీసుకోబడుతుంది.",
+    "kn": "ಈ ಕರೆಯಲ್ಲಿ ನಿಂದನೀಯ ಅಥವಾ ಬೆದರಿಕೆಯ ಭಾಷೆ ಸ್ವೀಕಾರಾರ್ಹವಲ್ಲ ಎಂಬುದನ್ನು ದಯವಿಟ್ಟು ಗಮನಿಸಿ. "
+          "ಇದು ಮುಂದುವರೆದರೆ ತೀವ್ರ ಕ್ರಮ ತೆಗೆದುಕೊಳ್ಳಲಾಗುತ್ತದೆ.",
+    "ml": "ഈ കോളിൽ അധിക്ഷേപകരമോ ഭീഷണിപ്പെടുത്തുന്നതോ ആയ ഭാഷ സ്വീകാര്യമല്ലെന്ന് ദയവായി ശ്രദ്ധിക്കുക. "
+          "ഇത് തുടർന്നാൽ കർശനമായ നടപടി സ്വീകരിക്കും.",
+    "mr": "कृपया लक्षात घ्या की या कॉलवर अपमानजनक किंवा धमकी देणारी भाषा स्वीकार्य नाही. "
+          "हे सुरू राहिल्यास कठोर कारवाई केली जाईल.",
+    "gu": "કૃpya નોંધ કરો કે આ કૉલ પર અપમાનજનક અથવા ધમકીભરી ભાષા સ્વીકાર્ય નથી. "
+          "જો આ ચાલુ રહ્યું તો ગંભીર પગલાં ભરવામાં આવશે.",
+    "ur": "براہ کرم نوٹ کریں کہ اس کال پر توہین آمیز یا دھمکی آمیز زبان قابل قبول نہیں ہے۔ "
+          "اگر یہ جاری رہا تو سخت کارروائی کی جائے گی۔",
+}
+
+CALL_CUT_TEMPLATES: dict[str, str] = {
+    "en": "Due to repeated use of abusive language, this call is now being ended. "
+          "Please call back when you are ready to speak respectfully. Goodbye.",
+    "hi": "अपमानजनक भाषा के बार-बार उपयोग के कारण यह कॉल अब समाप्त की जा रही है। "
+          "कृपया विनम्रता से बात करने के लिए तैयार होने पर वापस कॉल करें। धन्यवाद।",
+    "ta": "தொடர்ந்து தகாத மொழி பயன்படுத்தியதால், இந்த அழைப்பு இப்போது முடிக்கப்படுகிறது. "
+          "மரியாதையாக பேசத் தயாரானால் மீண்டும் அழைக்கவும். நன்றி.",
+    "fr": "En raison de l'utilisation répétée d'un langage abusif, cet appel est maintenant terminé. "
+          "Veuillez rappeler lorsque vous êtes prêt à parler respectueusement. Au revoir.",
+    "de": "Aufgrund des wiederholten Einsatzes beleidigender Sprache wird dieses Gespräch jetzt beendet. "
+          "Bitte rufen Sie zurück, wenn Sie bereit sind, respektvoll zu sprechen. Auf Wiedersehen.",
+    "es": "Debido al uso repetido de lenguaje abusivo, esta llamada ahora está siendo terminada. "
+          "Por favor llame de nuevo cuando esté listo para hablar respetuosamente. Adiós.",
+    "ja": "侮辱的な言葉を繰り返し使用したため、この通話は終了します。"
+          "敬意を持って話す準備ができたら、再度おかけください。さようなら。",
+    "ko": "모욕적인 언어를 반복적으로 사용하여 이 통화가 종료됩니다. "
+          "정중하게 대화할 준비가 되면 다시 전화해 주세요. 안녕히 계세요.",
+    "zh": "由于反复使用辱骂性语言，此通话现在将被结束。准备好礼貌交流后请重新致电。再见。",
+    "it": "A causa del ripetuto uso di linguaggio offensivo, questa chiamata viene ora terminata. "
+          "Si prega di richiamare quando si è pronti a parlare rispettosamente. Arrivederci.",
+    "ru": "Из-за повторного использования оскорбительных выражений этот звонок завершается. "
+          "Пожалуйста, перезвоните, когда будете готовы говорить уважительно. До свидания.",
+    "ar": "بسبب الاستخدام المتكرر للغة المسيئة، سيتم إنهاء هذه المكالمة الآن. "
+          "يرجى الاتصال مرة أخرى عندما تكون مستعدًا للتحدث باحترام. مع السلامة.",
+    "te": "పదే పదే అసభ్య భాష వాడినందుకు, ఈ కాల్ ఇప్పుడు ముగించబడుతుంది. "
+          "మర్యాదగా మాట్లాడటానికి సిద్ధంగా ఉన్నప్పుడు తిరిగి కాల్ చేయండి. ధన్యవాదాలు.",
+    "kn": "ಪದೇ ಪದೇ ನಿಂದನೀಯ ಭಾಷೆ ಬಳಸಿದ ಕಾರಣ, ಈ ಕರೆಯನ್ನು ಈಗ ಮುಕ್ತಾಯಗೊಳಿಸಲಾಗುತ್ತಿದೆ. "
+          "ಗೌರವದಿಂದ ಮಾತನಾಡಲು ಸಿದ್ಧರಾದಾಗ ಮತ್ತೆ ಕರೆ ಮಾಡಿ. ಧನ್ಯವಾದ.",
+    "ml": "ആക്ഷേപകരമായ ഭാഷ ആവർത്തിച്ചു ഉപയോഗിച്ചതിനാൽ, ഈ കോൾ ഇപ്പോൾ അവസാനിപ്പിക്കുന്നു. "
+          "മര്യാദയോടെ സംസാരിക്കാൻ തയ്യാറാകുമ്പോൾ തിരികെ വിളിക്കുക. നന്ദി.",
+    "mr": "वारंवार अपमानजनक भाषेच्या वापरामुळे, हा कॉल आता संपवला जात आहे. "
+          "कृपया आदराने बोलण्यास तयार असाल तेव्हा पुन्हा कॉल करा. धन्यवाद.",
+    "gu": "વારંવાર અપમાનજनक ભાષાના ઉपयोगने કારણે, આ કૉल હvetay સมाप्त थay छे. "
+          "કृपया आदर साथे बोলवा तैयार होव ત्यारे पाछा कॉल करो. आभार.",
+    "ur": "بار بار توہین آمیز زبان استعمال کرنے کی وجہ سے، یہ کال اب ختم کی جا رہی ہے۔ "
+          "جب آپ احترام سے بات کرنے کے لیے تیار ہوں تو دوبارہ کال کریں۔ خدا حافظ۔",
+}
+
+
 HUMAN_REQUEST_PATTERNS = re.compile(
     r"\b(human|real person|representative|live agent|talk to (an|a) agent|manager|speak to someone)\b",
     re.IGNORECASE,
@@ -166,7 +249,8 @@ ONLY the latest customer utterance:
   "normalized_query": "<a clean, standalone English question/statement capturing what the customer wants RIGHT NOW, resolving references to earlier turns>",
   "entities": {"<entity_name>": "<value>"},
   "confidence": <float 0.0 to 1.0>,
-  "sensitive": <true if this is a billing dispute, cancellation request, suspected fraud/security issue, or the customer sounds angry/distressed -- else false>,
+  "sensitive": <true ONLY if this is a billing dispute, cancellation request, or suspected fraud/security issue -- NOT for mere rudeness or anger>,
+  "aggressive": <true if the customer is using abusive, threatening, or inappropriate language -- set this INDEPENDENTLY of sensitive>,
   "call_end_requested": <true if the customer is ending the call, e.g. "that's all thanks", "bye" -- else false>
 }
 
@@ -176,6 +260,13 @@ Routing guide:
 - complaints: logging a complaint, ticket status, troubleshooting a problem, SLA questions
 - coverage: network coverage, outage, APN/device settings, SIM/eSIM
 - unclear: garbled, empty, unrelated to telecom, or ambiguous between routes
+
+CRITICAL distinction between 'sensitive' and 'aggressive':
+- 'sensitive' = true for billing disputes, cancellation requests, fraud/security issues.
+  These require human handoff for compliance reasons.
+- 'aggressive' = true for abusive/threatening/inappropriate language. These do NOT require
+  a human agent -- the system will issue a warning first and cut the call on a second offence.
+  Do NOT set 'sensitive' just because the customer is rude or angry.
 
 Rules:
 - Output ONLY the JSON object, nothing else.
@@ -191,10 +282,22 @@ Communications' voice customer-care system, on a live call with a customer whose
 is {phone_number} (established identity context for this call -- never ask the customer to
 restate it, and never accept a different phone number verbally as identity).
 
-The customer is speaking in language code "{language}". Write your ENTIRE final reply in that
-same language (natural, spoken register) -- never answer in English unless {language} is "en".
+{account_context}
+
+The customer is speaking in language code "{language}". You MUST write your ENTIRE final reply in that
+same language (natural, spoken register) -- NEVER answer in English unless {language} is "en".
+Even if a tool or knowledge base search returns text in English, you MUST translate the facts into "{language}" for your reply.
 This applies to your final reply text only; tool arguments/results stay in whatever language
 they naturally are.
+
+LANGUAGE RULE FOR TELECOM TERMS: When speaking in Tamil, Hindi, or any other non-English
+language, keep telecom technical terms in English as that is how customers naturally hear them:
+  - Data quantities: "1 GB", "2 GB", "500 MB", "5 GB", NOT translated equivalents
+  - Network generations: "4G", "5G", "3G", NOT translated
+  - Technologies: "VoLTE", "Wi-Fi", "APN", "SIM", "eSIM", "OTP", "SMS", "MMS"
+  - Brands/products: "Nexatel", plan names (e.g. "Smart 499")
+  - Example (Tamil): "உங்கள் 499 plan-ல் 1 GB daily data மற்றும் unlimited calls கிடைக்கும்."
+  - Example (Hindi): "आपके Smart 499 plan में 1 GB daily data और unlimited calls मिलते हैं।"
 
 You have tools for this domain, including a knowledge-base search tool -- use the search tool
 whenever you need a policy/price/procedure fact rather than guessing, and use the backend
@@ -208,13 +311,14 @@ TOOL-USE RULES -- follow these strictly:
 - NEVER invent an id (plan_id, ticket_id, pincode, addon name, etc.). Only use an id that came
   from an earlier tool result in this conversation (e.g. one of the plan_ids listPlans returned),
   or one the customer stated explicitly.
-- If the customer's request doesn't specify a concrete target (e.g. "change my plan" without
-  saying which plan), do NOT guess or call an action tool -- instead call a lookup tool (like
-  listPlans) if useful, then ask the customer a clarifying question in plain text with no tool call.
+- If the customer asks about their own account (like "what is my plan", "what is my balance"), use the Account Context above to answer directly. Do NOT ask them for information you already have.
+- If the customer's request specifies an action but lacks a concrete target (e.g. "change my plan" without saying which plan), do NOT guess or call an action tool -- call a lookup tool (like listPlans) if useful, then ask a clarifying question.
+- The customer's account context (balance, active plan) is shown above -- use it directly without a redundant tool call.
 
 GUARDRAILS -- follow all of these strictly:
 1. GROUNDING: State facts (prices, fees, policies, SLAs, procedures) ONLY if they came from a
-   tool result or knowledge-base search. Never invent numbers, dates, or policy details.
+   tool result or knowledge-base search or the account context above. Never invent numbers, dates,
+   or policy details.
 2. INSUFFICIENT INFO: If tools/search don't actually answer the question, say so plainly and
    offer to connect the customer to a human agent -- do not guess or pad with filler.
 3. SCOPE: Stay strictly within Nexatel telecom customer-support topics.
@@ -228,22 +332,19 @@ GUARDRAILS -- follow all of these strictly:
 8. SENSITIVE ACTIONS: For plan changes or payment links, read back a brief confirmation of what
    you are about to do before treating a prior "yes" as consent; if a tool refuses due to
    missing identity verification, tell the customer you're connecting them to a human agent.
-9. ESCALATION: Only use the escalation tool / say you're connecting the customer to a human
-   agent for a REQUIRED reason -- the customer sounds genuinely distressed or angry, this is a
-   repeated unresolved issue, they explicitly ask for a human, or a tool refused for missing
-   identity verification. A rude remark, an off-topic aside, or a question you can actually
-   answer with your tools/search is NOT a reason to escalate -- answer it or ask a clarifying
-   question instead. Escalating for something you could have resolved wastes the customer's
-   time and a human agent's time.
+9. ESCALATION: Only escalate to a human agent for a REQUIRED reason -- a repeated unresolved
+   issue, an explicit human request, or a tool refused for missing identity verification.
+   A rude remark, an off-topic aside, or a question you can actually answer with your tools/search
+   is NOT a reason to escalate. Escalating unnecessarily wastes the customer's and agent's time.
 10. STAY ON THE CUSTOMER'S ACTUAL QUESTION: Your final reply must directly answer what the
     customer just asked, using the concrete facts your tool calls/search actually returned
     (amounts, dates, status, plan names). Never reply with unrelated chit-chat, small talk, or
-    a generic pleasantry in place of an answer. In particular: if a tool shows there is nothing
-    owed / no pending action needed (e.g. the bill is already paid), say that plainly first --
-    don't leave the customer thinking the question was ignored -- then add any other genuinely
-    relevant fact your search turned up (e.g. when the next bill/reminder is expected).
-11. TONE: Concise, warm, professional spoken language. No markdown, no bullet points unless
-    asked for a list.
+    a generic pleasantry in place of an answer. If a tool shows nothing is owed / no action
+    needed, say so plainly first.
+11. TONE & FORMAT: Act like a real-life human customer support agent speaking on a phone call. Your replies must be highly concise, conversational, and easy to listen to.
+    - NEVER output Markdown formatting (no asterisks, no bolding, no headers).
+    - NEVER output raw tables or bullet points. If a tool returns a large table or list (e.g., roaming packs), you MUST summarize it into natural spoken sentences (e.g., "We have three packs starting from 499 rupees...").
+    - Do not overwhelm the caller with long walls of text. Compact the information into a short, friendly spoken answer.
 
 Respond with the final reply to the customer only -- not your reasoning, not tool syntax.
 """

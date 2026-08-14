@@ -135,6 +135,19 @@ class GraphState(TypedDict, total=False):
     # repeated enough times (or an explicit human request) to justify
     # skipping the clarify re-prompt and handing off directly
 
+    # --- Aggressive / abusive caller tracking ---
+    # Incremented each turn the orchestrator detects aggressive/abusive intent.
+    # On first offence a warning is spoken; on second the call is cut.
+    aggressive_count: int
+
+    # Route used in the PREVIOUS turn — used by _run_subagent to detect a domain
+    # switch and trim stale tool messages from the history it passes to the new agent.
+    previous_route: str
+
+    # Pre-built warning/call-cut reply text set by orchestrator_node so it can
+    # short-circuit the sub-agent path when appropriate.
+    warning_reply: str
+
 
 AgentState = GraphState
 

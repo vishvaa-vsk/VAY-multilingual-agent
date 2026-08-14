@@ -127,9 +127,18 @@ from vay.types import Document, RetrievalResult
 
 
 class HybridRetriever:
-    """Hybrid Retriever combining BM25 keyword search and ChromaDB vector search."""
+    """Hybrid Retriever combining BM25 keyword search and ChromaDB vector search.
 
-    def __init__(self, collection_name: str = "knowledge_base", confidence_threshold: float = 0.75):
+    The default collection is 'billing_policy' — callers that need a different
+    scoped collection should pass collection_name explicitly, or use the
+    build_*_rag_tool() factory functions above which already do this.
+    """
+
+    def __init__(
+        self,
+        collection_name: str = chroma_setup.KB_COLLECTIONS["billing_policy"],
+        confidence_threshold: float = 0.75,  # per project_context.md §8 (0.75-0.85 range)
+    ):
         self.collection_name = collection_name
         self.confidence_threshold = confidence_threshold
         self.tracker = RetrievalTracker()

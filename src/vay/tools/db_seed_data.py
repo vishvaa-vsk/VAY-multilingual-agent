@@ -275,4 +275,3 @@ COVERAGE = [
     ("411001", "Pune - Camp", "Good", "4G/5G", "none"),
 ]
 
-print("Seed Complete")
