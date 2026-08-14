@@ -2,7 +2,6 @@
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![UV](https://img.shields.io/badge/package%20manager-uv-purple.svg)](https://github.com/astral-sh/uv)
-[![Type Checked](https://img.shields.io/badge/mypy-strict-brightgreen.svg)](https://mypy.readthedocs.io/)
 
 VAY is a GenAI voice assistant tailored for telecom self-service (bill queries, plan changes, complaints) that understands and responds across multiple languages and accents.
 
@@ -77,11 +76,6 @@ source .venv/bin/activate
 .venv\Scripts\Activate.ps1
 ```
 *(Note: You do not need to manually activate the venv if you prefix commands with `uv run`.)*
-
-### Run Type Checking (Strict `mypy`)
-```bash
-uv run mypy src
-```
 
 ### Run Code Linting & Formatting (`ruff`)
 ```bash

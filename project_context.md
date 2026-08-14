@@ -1,157 +1,147 @@
-# Project Context: Multilingual GenAI Voice Assistant for Customer Care
+# Project Context: Nexatel Communications Multilingual Voice RAG Assistant
 
-**Purpose of this file**: This is the locked source of truth for any AI coding agent (Claude Code, Antigravity, or similar) working on this project. Every fact below is either a decision already made, or a number already measured. Do not substitute assumptions, "best practices," or generic patterns for anything stated here — treat conflicts between this file and an agent's prior training as this file being correct. If something genuinely isn't covered here, flag it as a question rather than inventing an answer.
+**Purpose of this file**: This is the locked source of truth for any AI coding agent (Claude Code, Antigravity, or similar) working on this project. Everything in Sections 1-7 describes the ACTUAL EXISTING CODEBASE — file names, function names, config values, and behavior are ground truth, not aspirational design. Do not "improve," refactor, or second-guess these mechanisms without being asked — especially the compliance-critical ones marked below. Section 8 covers what's upstream but out of this repo's scope. Section 9 is genuinely open/unresolved — do not invent answers there.
 
 ---
 
-## 1. Event Context
+## 1. What This Repo Is
 
-- Hackathon: Velammal-AIA Partnership / Cognizant hackathon
-- Use case #15 of 18: **"Multilingual GenAI Voice Assistant for Customer Care"**
-- Team size: 8 members
-- Timeline: build window Aug 12–18, 2026 (7 days), final evaluation/presentation Aug 19, 2026
-- Judging criteria include: use-case understanding, solution architecture, innovation, UI/UX, technical implementation & code quality, model performance & evaluation (accuracy/precision/recall/F1), deployment & integration, presentation, teamwork
-- Reference dataset named in the original problem statement: Mozilla Common Voice (crowdsourced multilingual speech + transcript dataset)
+A LangGraph orchestrator + 4 domain sub-agents (Billing, Plans, Complaints, Coverage), each with its own scoped RAG retriever and backend "API" tools, behind a Groq-hosted LLM, driving an edge-tts spoken reply. This is the **second-generation architecture** (agentic, multi-sub-agent) — an earlier single-pipeline design was fully replaced (see Section 7 for the deleted files).
 
-## 2. Problem Statement (as given)
+**Scope boundary — important**: this repo takes an **already-transcribed** customer utterance as input: `(transcript, language_code, phone_number)`. ASR, VAD, and Language-ID happen in a separate upstream component and are OUT OF SCOPE here (see Section 8 for what's known about that upstream piece).
 
-"Voice-based customer care is dominated by a few high-resource languages, leaving large customer segments underserved. Build a GenAI voice assistant that understands and responds across multiple languages/accents for telecom self-service (bill queries, plan changes, complaints)." Required components per the brief: ASR (fine-tune/evaluate on multilingual accented audio), LLM+RAG grounded on an operator knowledge base, TTS, language auto-detection, intent recognition, graceful hand-off to a human agent on low confidence.
+## 2. Locked Model/Service Choices — EXACT, DO NOT SUBSTITUTE
 
-## 3. Language Scope — DO NOT DEVIATE WITHOUT DISCUSSION
-
-**In scope, specialized (Tier 1): Tamil, Hindi**
-**In scope, general fallback (Tier 2): English + any other language Whisper supports**
-
-Rationale (do not re-litigate this without cause): the problem statement explicitly frames high-resource languages (English, and others) as already well-served — the underserved segment it calls out is exactly where Tamil/Hindi specialization targets effort. Two-tier design means the system degrades gracefully to a Whisper baseline for any language without a specialized route, rather than breaking on out-of-scope input (e.g. Dutch, Spanish, Japanese).
-
-**Do not attempt to add more Tier-1 languages during the hackathon window** unless the team explicitly decides to — scope is Tamil + Hindi as the specialized pair, by design, given the 7-day constraint.
-
-## 4. Model Choices — EXACT, DO NOT SUBSTITUTE
-
-| Component | Model | Notes |
+| Component | Choice | Notes |
 |---|---|---|
-| ASR (Tier 1: Tamil, Hindi) | `ai4bharat/indic-conformer-600m-multilingual` | Does NOT support English. Do not attempt to route English through it. |
-| ASR (Tier 2: English + fallback) | `openai/whisper-large-v3-turbo` | Handles ~90+ languages at baseline quality; this is the general-purpose fallback, not just the English model. |
-| Language ID | Whisper's own encoder-only language detection pass | No separate LID model — do not add one. This is a deliberate cost/latency decision. |
-| TTS (Tamil, Hindi) | AI4Bharat IndicF5 (preferred) or AI4Bharat Indic-TTS (simpler fallback if IndicF5's reference-audio requirement is too much overhead) | IndicF5 requires a reference prompt audio clip + its transcript to guide voice/prosody — it is NOT plain text-in/speech-out. |
-| TTS (English + fallback) | Any standard TTS (gTTS is the simplest to wire up; Coqui/Piper if quality needed) | |
-| LLM | Not yet pinned to a specific provider/model in this doc — confirm with team before hardcoding | |
-| Orchestration | LangGraph (state graph, not LangChain linear chains) | LangChain retriever/vector-store primitives may be used *inside* LangGraph nodes |
-| VAD | Silero VAD (or equivalent) | Utterance boundary = ~600–700ms of detected silence after speech |
-| Vector DB | ChromaDB or FAISS | Hybrid search: keyword (BM25-style) + vector, with top-k reranking |
+| LLM (orchestrator + all 4 sub-agents) | Groq `llama-3.1-8b-instant` via `langchain_groq.ChatGroq` | Env var `GROQ_MODEL` overrides; `GROQ_API_KEY` required, hard error if unset, no fallback |
+| Orchestration | LangGraph | See Section 3 for the exact node graph |
+| TTS | `edge-tts` (Microsoft Edge neural voices) via `tts.py` | **This replaces an earlier plan to use IndicF5/gTTS** — if you see IndicF5 referenced anywhere (docs, diagrams, chat history), it's superseded; the actual code uses edge-tts |
+| Vector DB | ChromaDB, 5 collections | `all-MiniLM-L6-v2` embeddings, cosine distance |
+| Mock backend | SQLite (`nexatel_customers.db`) | Stands in for real billing/CRM/network APIs |
 
-## 5. CRITICAL Implementation Gotchas (measured, not theoretical)
-
-These were discovered through actual debugging during evaluation. An agent unaware of these WILL waste time rediscovering them or silently produce wrong results.
-
-### 5.1 IndicConformer cannot be loaded via `transformers.pipeline()`
-```python
-# WRONG — will fail with "Unrecognized configuration class IndicASRConfig"
-pipe = pipeline("automatic-speech-recognition", model="ai4bharat/indic-conformer-600m-multilingual", trust_remote_code=True)
-```
-`pipeline()` for the ASR task only recognizes a fixed set of Auto classes (AutoModelForCTC, AutoModelForTDT, AutoModelForSpeechSeq2Seq), and IndicConformer's custom `IndicASRConfig` isn't among them, even with `trust_remote_code=True`.
-
-**Correct approach:**
-```python
-model = AutoModel.from_pretrained("ai4bharat/indic-conformer-600m-multilingual", trust_remote_code=True)
-transcription = model(wav_tensor, lang_code, "ctc")  # or "rnnt" for the other decoding strategy
-```
-- `wav_tensor`: shape `[1, num_samples]`, float32, 16kHz mono
-- `lang_code`: ISO code, e.g. `"ta"` for Tamil, `"hi"` for Hindi
-- Return value may be a string or a list depending on version — normalize with `if isinstance(result, list): result = result[0]`
-- You will see `onnxruntime` warnings about `CUDAExecutionProvider` not being available in some environments — this is a runtime/provider availability issue, investigate `onnxruntime-gpu` install if GPU acceleration is expected but not occurring.
-- You will also see repeated `"Please check FRAME_DURATION_MS"` warnings during load — these are informational from the model's internals, not fatal.
-
-### 5.2 IndicConformer does not support English
-Do not attempt to evaluate or route English through it. Two-tier routing exists precisely because of this — English always goes to Whisper.
-
-### 5.3 Whisper hallucinates on Tamil/Hindi, especially on silence/noise/code-switching
-Mitigation already decided: VAD-based silence trimming before ASR, plus a post-ASR hallucination/repetition filter applied specifically on the Whisper path (not needed on IndicConformer, which doesn't share this failure mode).
-
-### 5.4 Code-switching (Tanglish/Hinglish) is a known weak spot for BOTH models
-Neither Whisper nor IndicConformer was trained primarily on code-switched data. Mitigation: an LLM-based transcript normalization/cleanup pass after ASR, before retrieval — this is NOT optional polish, it's the actual fix for this failure mode. Do not skip it.
-
-### 5.5 Text normalization is required before computing WER/CER
-Raw-text WER comparison inflates error rates due to punctuation/whitespace/Unicode-form mismatches. Always normalize (lowercase, strip punctuation, collapse whitespace, Unicode NFC normalize) both reference and hypothesis before scoring.
-
-### 5.6 Mozilla Common Voice Kaggle mirror (`mozillaorg/common-voice`) has a filename collision trap
-This specific Kaggle dataset reuses generic filenames (`sample-000000.mp3`, `sample-000001.mp3`, ...) across ALL splits (`cv-valid-test`, `cv-valid-train`, `cv-other-test`, `cv-other-train`, `cv-valid-dev`, `cv-other-dev`, `cv-invalid`). **If you index audio files by bare filename across the whole extracted tree, files from different splits will silently overwrite each other**, pairing the wrong audio with a transcript and producing impossible WER (>100%). Fix: only index mp3s from within the specific split folder you need (e.g. only paths containing `cv-valid-test`), never index by bare filename across the whole tree.
-
-### 5.7 Tamil/Hindi datasets for this project were sourced via Mozilla Data Collective, not Kaggle
-English was sourced via the Kaggle `mozillaorg/common-voice` mirror instead (see 5.6 for its specific trap). This is a deliberate mixed-source setup, not an oversight — Mozilla Data Collective did not have a confirmed English dataset ID at the time this was set up.
-
-## 6. Measured ASR Evaluation Results (ground truth — do not re-estimate or guess these)
-
-Evaluated on 200 samples per language, Mozilla Common Voice (Tamil/Hindi) and Kaggle Common Voice mirror (English), same normalization pipeline for both models:
-
-| Language | Whisper WER | Whisper CER | Whisper Avg Time/sample | IndicConformer WER | IndicConformer CER | IndicConformer Avg Time/sample |
-|---|---|---|---|---|---|---|
-| Tamil | 62.44% | 17.87% | 0.86s | 26.06% | 5.52% | 1.66s |
-| Hindi | 35.10% | 17.60% | 0.59s | 12.00% | 6.30% | 1.10s |
-| English | ~3.8% (measured in an earlier clean run; a later run with a corrupted Kaggle audio-text pairing produced an invalid >100% result — see §5.6) | — | — | N/A (not supported) | N/A | N/A |
-
-**Conclusions this data supports:**
-- IndicConformer meaningfully outperforms Whisper on both Tamil (roughly half the WER) and Hindi (roughly a third the WER) — this is the empirical justification for the two-tier routing architecture.
-- Whisper is strong on English (~3.8% WER in a clean run) — validates using it as the Tier 2 fallback.
-- These are clean, monolingual, read-aloud speech numbers. Code-switched (Tanglish/Hinglish) performance has NOT been separately measured as of this writing — if an agent needs code-switching numbers, they must be generated fresh, not assumed to match the above.
-- Do not present the English WER as a settled number in any deliverable until re-validated after the fix in §5.6 — the last known-good English WER figure is ~3.8%, from a run prior to the Kaggle pairing bug being introduced.
-
-## 7. Full Architecture — Pipeline Order
-
-This is the current locked architecture (matches the team's finalized diagram). Implement in this order; do not reorder or skip stages without discussion.
+## 3. LangGraph Architecture — Node by Node
 
 ```
-USER SPEAKS
-  → Microphone input → audio stream
-  → VAD (Voice Activity Detection) — detects speech vs silence, ~600-700ms silence = utterance boundary
-  → Language ID (Whisper encoder-only pass, no separate model)
-      ├─ Tamil/Hindi → ai4bharat/indic-conformer-600m-multilingual → Transcription (raw)
-      └─ Other (incl. English) → openai/whisper-large-v3-turbo → Whisper Output Filter
-                                   (hallucination/repetition filtering, Whisper-path only) → Transcription (raw)
-  → Transcription Normalization
-      (code-switch normalization, ASR error correction, language tagging, entity tagging — LLM-based cleanup)
-  → Structured Format output: { Language, Intent, Normalized, Entities, Confidence }
-  → Intent + Entity Extraction (analyzes structured format)
-      ├─ Sensitive/Restricted intent detected → escalate directly to HUMAN HANDOFF (bypasses retrieval entirely)
-      └─ Not sensitive → continue to RAG Module
-  → RAG MODULE:
-      Intent-Aware Hybrid RAG (keyword + vector search) queries Vector DB (ChromaDB/FAISS)
-      → top-k reranked results → Retrieval Score
-  → Retrieval Score check (threshold τ, empirically ~0.75-0.85 for "high confidence")
-      ├─ Low confidence → escalate to HUMAN HANDOFF
-      └─ High confidence → Handoff Gate
-  → Handoff Gate (human request detected? LLM uncertain in its draft response?)
-      ├─ YES → HUMAN HANDOFF
-      └─ NO → LLM Response Generation (grounded, in the user's detected language)
-  → Language-Aware TTS (IndicF5/Indic-TTS for Tamil/Hindi, multilingual fallback for other languages)
-  → Audio Output → played back to user
-  → loop back to VAD for next utterance
+START
+  → orchestrator_node
+      Groq LLM outputs STRICT JSON:
+      {language, intent, route, normalized_query, entities, confidence, sensitive, call_end_requested}
+      (a pending_action from a prior turn force-routes a bare yes/no back to its owning sub-agent)
+  → route_after_orchestrator():
+      ├─ call_end_requested            → closing_node
+      ├─ sensitive OR route="unclear"
+      │  OR confidence < 0.4           → human_handoff_node
+      └─ otherwise                     → billing_node | plans_node | complaints_node | coverage_node
+  → [each sub-agent node runs a BOUNDED TOOL-CALLING LOOP, max 4 iterations]:
+      ChatGroq.bind_tools(domain_tools + rag_tool)
+      loop: LLM → tool_calls? → invoke tool → ToolMessage → (repeat or finalize)
+      "STOP_AND_SAY:" sentinel short-circuits the loop entirely (used for consent scripts —
+      see Section 4, this bypasses the LLM, it does not go through it)
+      no more tool_calls → draft reply
+  → guardrail_node checks, on the draft reply / retrieval:
+      ├─ retrieval_score < DEFAULT_MIN_SIMILARITY (0.3)?
+      ├─ "talk to a human" phrase detected? (HUMAN_REQUEST_PATTERNS)
+      ├─ uncertainty phrase in draft? (UNCERTAINTY_PATTERNS)
+      └─ PII/credential leak pattern in draft? (PII_LEAK_PATTERNS)
+      any match → human_handoff_node ; otherwise → final_reply = draft
+  → human_handoff_node (if reached from any path above):
+      logs full context packet (transcript, intent, entities, route, reason, draft) to
+      handoff_log.jsonl (mock escalation queue, gitignored) via log_handoff()
+      final_reply = fixed HANDOFF_MESSAGE
+  → tts_node: tts.speak(reply, lang) → edge-tts synth + playback
+  → END, loop back to orchestrator_node for the next utterance in the same call
+    (conversation_history + one SessionContext persist across turns in agent_graph.main())
 ```
 
-**HUMAN HANDOFF** is a single terminal node reachable from three separate triggers (sensitive intent, low retrieval confidence, handoff gate) — implement it as one shared escalation path, not three separate ones, to keep logging/queueing consistent.
+## 4. Compliance-Critical Mechanisms — DO NOT WEAKEN OR "SIMPLIFY" THESE
 
-## 8. Design Decisions and Their Rationale (so agents don't "fix" intentional choices)
+These exist deliberately to keep sensitive actions out of the LLM's hands. Treat any change to them as requiring explicit sign-off, not a routine refactor.
 
-- **No dedicated LID model** — Whisper's own encoder does language detection. This was a deliberate cost/latency decision, not an oversight.
-- **RAG queries an English-normalized representation, but responses generate directly in the user's language** — do not add a separate "translate response back" step; the LLM is instructed to respond in-language directly using the retrieved English context.
-- **Retrieval confidence threshold (~0.75-0.85) is intentionally strict**, prioritizing safe hand-off over confidently wrong answers in a telecom self-service context (billing/account info at stake). Do not loosen this without an explicit decision from the team — it trades off demo "wow factor" for correctness/safety, and that trade was made deliberately.
-- **Sensitive/Restricted Intent gate exists for compliance/privacy reasons**, not just accuracy — it catches account/PII-adjacent intents and routes to a human before they ever reach retrieval or generation.
-- **LangGraph, not LangChain, for orchestration** — the pipeline has real conditional branching (language routing, confidence checks, handoff gate), which is a state-machine problem. LangChain primitives (retrievers, vector store wrappers) can still be used *inside* LangGraph nodes.
-- **No plans to fine-tune ASR, TTS, or LLM models from scratch** during the hackathon window — all models are used pretrained. This is a scope decision given the 7-day timeline, not a technical limitation being worked around.
-- **Streaming approach**: sentence-level streaming from LLM generation to TTS (start synthesizing/playing the first sentence while later sentences are still generating), not full-duplex/barge-in interruption handling. Barge-in is explicitly out of scope for this hackathon.
+- **Two-phase, code-enforced consent for sensitive actions** (`changePlan`, `sendPaymentLink`):
+  1. First tool call only *stages* `session.pending_action` and returns `"STOP_AND_SAY: " + consent_script(...)`.
+  2. `run_tool_agent()` recognizes the `STOP_AND_SAY:` sentinel and returns that text verbatim — the LLM never sees or paraphrases the consent script.
+  3. The action is only actually committed by `confirm_pending_action()`, called by the graph itself from the **customer's own next-turn transcript** containing a literal "yes" — checked by regex (`AFFIRMATION_PATTERN`) in `agent_graph.py`. This is **never** an LLM judgment call.
+  4. Both sensitive tools refuse outright if `session.verified` is `False` (`SENSITIVE_DENIAL`).
+- **`consent_script()` / `CONSENT_TEMPLATES`**: fixed, hand-written per-language templates (en/hi/ta) that always end with a literal English "yes"/"no" instruction — deliberately English-literal so the confirmation regex doesn't need to enumerate affirmation phrases across every supported language.
+- **Phone number is session-bound, never LLM-fillable**: `SessionContext` (dataclass: `phone_number`, `verified`, `language`, `escalation_requested`, `escalation_reason`, `pending_action`) is closed over by each `build_<domain>_tools(session)` factory. The LLM only ever supplies content arguments (`plan_id`, `ticket_id`, etc.), never the phone number itself — this is a compliance requirement, not an implementation convenience.
 
-## 9. Explicit Non-Goals / Things NOT to Build
+## 5. Per-Sub-Agent Tools and Scoped RAG
 
-- Do not attempt real-time barge-in / interruption handling (user talking over the assistant mid-response).
-- Do not attempt to fine-tune any ASR, TTS, or LLM model — pretrained models only.
-- Do not add languages beyond Tamil/Hindi (Tier 1) and Whisper's general coverage (Tier 2) without an explicit team decision.
-- Do not build real human-agent telephony/handoff infrastructure — a mock escalation queue/dashboard is sufficient for the demo.
-- Do not assume IndicConformer supports English, or any language outside its documented 22 Indian languages.
-- Do not invent Mozilla Data Collective or Kaggle dataset IDs — use only the ones already confirmed working (Tamil/Hindi via Mozilla Data Collective, English via the `mozillaorg/common-voice` Kaggle dataset), and if a new one is needed, it must be looked up fresh, not guessed.
+| Sub-agent | Domain tools (`tools.py`, SQLite via `customer_db.py`) | RAG collection |
+|---|---|---|
+| Billing | `getBalance`, `getBillBreakup`, `getDueDate`, `sendPaymentLink`*, `explainCharge` | `billing_policy` |
+| Plans | `listPlans`, `comparePlans`, `changePlan`*, `activateAddOn`, `checkEligibility` | `product_catalog` |
+| Complaints | `createComplaint`, `getTicketStatus`, `runTroubleshootFlow`, `escalateToHuman` | `support_faq` |
+| Coverage | `checkCoverage`, `getOutageStatus`, `getDeviceSettings`, `guideSimSwap` | `technical_kb` |
 
-## 10. Open Items (not yet decided — do not assume answers)
+(* = two-phase, code-enforced consent gate, see Section 4)
 
-- Exact LLM provider/model for response generation and the transcript-normalization cleanup pass — not yet pinned in this document.
-- Whether IndicF5 (needs reference audio) or plain Indic-TTS (simpler) is the final TTS choice for Tamil/Hindi.
-- Code-switched (Tanglish/Hinglish) ASR accuracy has not been separately measured — do not present code-switching performance numbers as validated.
-- Exact retrieval threshold τ may still be tuned empirically against the actual built KB, rather than a scoped test set.
+**A 5th collection, `compliance_policy`, exists but is NOT a bindable tool for any sub-agent** — it's read only by the guardrail layer via `compliance_policy_search()` (a direct, non-LangChain-tool helper) for consent-script and do/don't-say rules. Do not bind it to a sub-agent as a regular RAG tool.
+
+Each sub-agent gets **only its own** retriever tool (`rag_tools.py`: `build_billing_rag_tool`, `build_product_rag_tool`, `build_support_rag_tool`, `build_technical_rag_tool`) — do not give a sub-agent access to another domain's collection. Rationale (per the team): precise retrieval, lower hallucination risk, independently testable/evaluatable per domain.
+
+`RetrievalTracker` records the best similarity (`1 - distance`) seen across a sub-agent turn's RAG calls; this is what the guardrail node's confidence check reads.
+
+## 6. Configuration — Current Values (confirm before changing)
+
+| Parameter | Default | Source |
+|---|---|---|
+| `GROQ_MODEL` | `llama-3.1-8b-instant` | `agent_graph.py`, env `GROQ_MODEL` |
+| `GROQ_API_KEY` | *(required)* | env var, no fallback |
+| `DEFAULT_MIN_SIMILARITY` | **0.3** | `agent_graph.py` — see flag below |
+| `DEFAULT_NLU_CONFIDENCE` | 0.4 | `agent_graph.py` — orchestrator confidence floor before routing to a sub-agent |
+| `DEFAULT_MAX_HISTORY_TURNS` | 6 | `agent_graph.py` |
+| `MAX_TOOL_ITERATIONS` | 4 | `agent_graph.py` |
+| `HANDOFF_LOG_PATH` | `handoff_log.jsonl` | `agent_graph.py` |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | `chroma_setup.py` |
+| `PERSIST_DIRECTORY` | `chroma_db` | `chroma_setup.py` |
+| `KB_COLLECTIONS` | 5 named collections | `chroma_setup.py` |
+| `DEFAULT_CHUNK_SIZE` / overlap | ~500 chars / ~100 chars | `content_manager.py`, tuned for the embedding model's 256-token window |
+| `DB_PATH` | `nexatel_customers.db` | `customer_db.py` |
+
+**UNRESOLVED FLAG — do not silently "fix" either direction**: an earlier design decision (before this repo existed) set the retrieval confidence threshold at **~0.75-0.85** for a telecom self-service context, specifically to prioritize safe human hand-off over confidently-wrong billing/account answers. The actual code's `DEFAULT_MIN_SIMILARITY` is **0.3** — a much more permissive bar. This is a real, unresolved discrepancy between an earlier safety-motivated decision and the current implementation. If you're an agent working on this repo: do not change this value on your own judgment in either direction — surface it and ask, since the gap is large enough that it changes real behavior (how often the system answers vs. hands off).
+
+## 7. File-by-File Reference
+
+- **`agent_graph.py`** — orchestrator + entry point. Owns system prompts (`ORCHESTRATOR_SYSTEM_PROMPT`, `SUBAGENT_SYSTEM_PROMPT_TEMPLATE`), `GraphState` TypedDict, node functions, routing functions, `run_tool_agent()` (the bounded tool-calling loop shared by all 4 sub-agent nodes). `main()` is a CLI REPL — prompts for phone + language once, loops on transcribed utterances. CLI flags: `--min_similarity`, `--max_history_turns`, `--show_debug`, `--language`, `--phone`. Guardrail regexes: `HUMAN_REQUEST_PATTERNS`, `UNCERTAINTY_PATTERNS`, `PII_LEAK_PATTERNS`, `AFFIRMATION_PATTERN`/`NEGATION_PATTERN`.
+- **`tools.py`** — backend tool factories per sub-agent, closing over `SessionContext`. All tools read/write mock SQLite via `customer_db._connect()`. Static reference data: `TROUBLESHOOT_FLOWS` (5 issue types), `SLA_DAYS` (per ticket category), `DEVICE_SETTINGS` (Android/iPhone APN + VoLTE steps).
+- **`rag_tools.py`** — `RetrievalTracker`, `_make_retriever()` (wraps `content_manager.read()` as a LangChain `@tool`), one `build_*_rag_tool()` factory per sub-agent, `compliance_policy_search()`.
+- **`customer_db.py`** — mock SQLite DB. Tables: `customers`, `plans` (18 seeded, prepaid/postpaid/broadband), `subscriptions`, `bills`, `payments`, `tickets`, `coverage` (pincode → signal/outage). 10 seeded sample customers (phone `98765000xx`) covering every sub-agent demo path. CLI: `python customer_db.py` (create+seed), `--reset`.
+- **`chroma_setup.py`** — centralized ChromaDB connection manager, module-level cached `get_client()`/`get_embedding_function()`/`get_collection()`. CLI: `python chroma_setup.py` (status), `--reset` (typed "yes" confirmation).
+- **`build_kb.py`** — ingests each `kb_docs/*.md` into its own scoped collection via `content_manager.create_from_markdown()`, guided category labels per KB (`KB_SPEC` dict). CLI: `python build_kb.py` (idempotent upsert), `--reset`.
+- **`content_manager.py`** — shared CRUD engine, the only file that talks to ChromaDB collections directly. Sentence-boundary chunking (NLTK `sent_tokenize`), heading-context propagation, content-addressed chunk IDs (SHA-256, idempotent upserts), guided or unsupervised (KMeans+TF-IDF) category tagging, language detection (`langdetect`).
+- **`tts.py`** — `speak(text, lang, output_path, play)`, synthesizes via edge-tts, optionally plays via `playsound3`, deletes the temp mp3. Never raises — failures are logged and swallowed so a headless environment doesn't kill the call loop. `VOICES` dict covers 18 language codes (ta, hi, en-IN, fr, de, es, ja, ko, zh, it, ru, ar, te, kn, ml, mr, gu, ur), falls back to `en-IN-NeerjaNeural`.
+- **`kb_docs/`** — `billing_policy.md`, `product_catalog.md`, `support_faq.md`, `technical_kb.md`, `compliance_policy.md` — hand-authored Nexatel policy/product docs, one per scoped collection.
+
+**Setup**: `pip install -r requirements.txt` → `python build_kb.py` → `python customer_db.py` → set `GROQ_API_KEY` → `python agent_graph.py`.
+
+**Superseded/deleted files** (do not resurrect or reference as current): `voice_rag_pipeline.py`/`voice_rag_pipelinev1.py` (→ `agent_graph.py`), `build_chroma_kb.py` (→ `build_kb.py`), `inspect_db.py` (→ `content_manager.py` methods), `chroma_setup (1).py` (→ `chroma_setup.py`), `demo.py` (removed, no replacement), `pdfs/*.pdf` (→ `kb_docs/*.md`).
+
+---
+
+## 8. Upstream Component (separate from this repo, feeds it transcripts)
+
+This repo consumes `(transcript, language_code, phone_number)` — it does not do ASR/VAD/LID itself. The following was decided/measured for that upstream piece, in an earlier phase of the project, and remains relevant context even though it's not in this codebase:
+
+- **ASR, two-tier**: `ai4bharat/indic-conformer-600m-multilingual` for Tamil/Hindi (does not support English), `openai/whisper-large-v3-turbo` for English + fallback for any other language.
+- **Measured WER (200 samples/language, Mozilla Common Voice)**: Tamil — Whisper 62.44%, IndicConformer 26.06%. Hindi — Whisper 35.10%, IndicConformer 12.00%. English — Whisper ~3.8% (a later run was invalidated by a Kaggle dataset filename-collision bug; that fix is documented but the number needs reconfirming).
+- **IndicConformer loading gotcha**: must use `AutoModel.from_pretrained(..., trust_remote_code=True)` + direct call `model(wav, lang_code, "ctc")` — NOT `transformers.pipeline()`, which fails on its custom config class.
+- **Whisper language-ID gotcha**: Whisper's LID confuses Hindi and Urdu heavily (documented, acoustically near-identical languages) — any routing logic in the upstream service must treat `hi`/`ur` predictions as equivalent, or Hindi speakers get misrouted away from IndicConformer roughly 3 out of 4 times.
+- **Code-switching**: neither ASR model was trained primarily on code-switched (Tanglish/Hinglish) speech; a transcript normalization/cleanup pass is the intended mitigation, not fixed at the ASR layer.
+- **Whether/how the upstream service is being built to feed this repo, and its own confidence-passing format, is not specified here** — if an agent needs this, it's a question for the team, not something to assume from the ASR-only facts above.
+
+## 9. Explicit Non-Goals
+
+- Do not attempt real-time barge-in/interruption handling.
+- Do not fine-tune the LLM, ASR, or TTS models as part of this repo's scope.
+- Do not give any sub-agent access to another domain's RAG collection or tools.
+- Do not let the LLM judge or paraphrase consent-script text, or make the yes/no confirmation decision — both are code-enforced by design (Section 4).
+- Do not build real human-agent telephony — `handoff_log.jsonl` is the intended mock escalation queue.
+
+## 10. Genuinely Open / Unresolved
+
+- **The 0.3 vs ~0.75-0.85 retrieval threshold discrepancy (Section 6)** — needs an explicit team decision, not an agent's guess.
+- Whether the upstream ASR/VAD/LID service is being actively built, by whom, and its exact interface into this repo.
+- Whether the invalidated English WER re-run (Section 8) has since been reconfirmed.
+- Whether a Whisper LoRA fine-tune on Svarah (Indian-accented English) is still planned — last known status was "time-boxed, cut if not clearly better within a day," outcome not recorded here.
