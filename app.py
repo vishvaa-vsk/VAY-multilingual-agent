@@ -1,11 +1,15 @@
 import sys
 import asyncio
+import warnings
+
+# Suppress DeprecationWarnings from event loop policy on Windows
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Force Selector event loop on Windows to prevent asyncio Proactor socket assertion crashes
 if sys.platform == 'win32':
     try:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except AttributeError:
+    except Exception:
         pass
 
 import streamlit as st
@@ -14,13 +18,15 @@ import json
 import os
 from audio_handler import decode_audio, encode_audio_bytes
 from component_strands import strands_component
+from component_galaxy import galaxy_component
+from component_aurora import aurora_component
 
 # Ensure page config is set first
 st.set_page_config(
-    page_title="VAY Voice Assistant - Operator Portal & Live Agent Dashboard",
+    page_title="VAY Voice Assistant For You",
     page_icon="🎙️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Try to import gTTS, fallback to mock if not installed yet
@@ -33,6 +39,30 @@ except ImportError:
 # Inject custom global CSS for premium UI styling
 st.markdown("""
 <style>
+    /* Hide Streamlit top header bar, decoration line, and toolbar */
+    header[data-testid="stHeader"] {
+        display: none !important;
+        background: transparent !important;
+        height: 0 !important;
+        visibility: hidden !important;
+    }
+    div[data-testid="stDecoration"] {
+        display: none !important;
+        height: 0 !important;
+        visibility: hidden !important;
+    }
+    div[data-testid="stToolbar"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    #MainMenu, footer {
+        display: none !important;
+        visibility: hidden !important;
+    }
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
+
     /* Dark Theme Core Styles */
     .stApp {
         background: radial-gradient(circle at center, #111115 0%, #070708 100%);
@@ -129,6 +159,46 @@ st.markdown("""
         margin-bottom: 10px;
         font-size: 13px;
     }
+
+    /* ==================================================== */
+    /* COUNTRY CODE & PHONE INPUT COLOR SETTINGS            */
+    /* ==================================================== */
+    
+    /* 1. "Country Code" Label Color */
+    div[data-testid="stSelectbox"] label p {
+        color: #f97316 !important; /* <--- CHANGE COUNTRY CODE LABEL COLOR HERE */
+        font-weight: 600;
+        font-size: 14px;
+        letter-spacing: 0.5px;
+    }
+
+    /* 2. Country Code Dropdown Box (Background, Border, Selected Text) */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        background-color: rgba(255, 255, 255, 0.1) !important; /* <--- CHANGE BOX BACKGROUND HERE */
+        border: 1px solid rgba(249, 115, 22, 0.4) !important;   /* <--- CHANGE BORDER COLOR HERE */
+        border-radius: 10px !important;
+    }
+
+    /* 3. Country Code Selected Value Text Color */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] * {
+        color: #000!important;                                 /* <--- CHANGE TEXT VALUE COLOR HERE */
+    }
+
+    /* 4. "Phone Number" Label Color */
+    div[data-testid="stTextInput"] label p {
+        color: #06b6d4 !important; /* <--- CHANGE PHONE NUMBER LABEL COLOR HERE */
+        font-weight: 600;
+        font-size: 14px;
+        letter-spacing: 0.5px;
+    }
+
+    /* 5. Phone Number Input Box (Background & Border) */
+    div[data-testid="stTextInput"] input {
+        background-color: rgba(0, 0, 0, 0) !important;
+        border: 1px solid rgba(6, 182, 212, 0.4) !important;
+        color: #00000 !important;
+        border-radius: 10px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -184,6 +254,9 @@ if "current_pipeline_data" not in st.session_state:
         "action": "N/A",
         "entities": {}
     }
+
+if "last_processed_event_id" not in st.session_state:
+    st.session_state.last_processed_event_id = None
 
 # Track toggle changes or button actions
 if "component_key" not in st.session_state:
@@ -356,54 +429,74 @@ def run_multilingual_pipeline(user_query, detected_lang="en"):
 
 def escalate_session(reason):
     """
-    Triggers human agent escalation logic (Gotcha §7 - shared escalation route)
+    Triggers human agent escalation logic (Gotcha §7 - shared escalation route).
+    Preserves active user session while recording escalation in Live Agent Dashboard.
     """
     st.session_state.status = "handoff"
     
     escalation_entry = {
         "timestamp": time.strftime("%H:%M:%S"),
-        "raw_text": st.session_state.current_pipeline_data["raw_text"],
-        "language": st.session_state.current_pipeline_data["language"],
-        "intent": st.session_state.current_pipeline_data["intent"],
-        "confidence": st.session_state.current_pipeline_data["confidence"],
+        "raw_text": st.session_state.current_pipeline_data.get("raw_text", "Customer requested escalation"),
+        "language": st.session_state.current_pipeline_data.get("language", "English"),
+        "intent": st.session_state.current_pipeline_data.get("intent", "Supervisor Escalation"),
+        "confidence": st.session_state.current_pipeline_data.get("confidence", 0.0),
         "reason": reason
     }
     
     st.session_state.escalation_queue.insert(0, escalation_entry)
     
-    # Safely clear conversation variables and route back to the landing page
-    st.session_state.session_started = False
-    st.session_state.phone_number = ""
-    st.session_state.chat_history = []
-    st.session_state.status = "idle"
+    # Record end/handoff notification in conversation transcript
+    st.session_state.chat_history.append({
+        "speaker": "system",
+        "text": f"ℹ️ [CALL ENDED] Reason: {reason}",
+        "lang": "en"
+    })
+    
+    # Keep session active and ready for live operator handling
     st.session_state.audio_to_play = None
-    st.session_state.current_pipeline_data = {
-        "language": "N/A",
-        "route": "N/A",
-        "intent": "N/A",
-        "confidence": 0.0,
-        "raw_text": "N/A",
-        "clean_text": "N/A",
-        "action": "N/A",
-        "entities": {}
-    }
+    st.session_state.current_pipeline_data["action"] = f"Escalated ({reason})"
     st.rerun()
 
 # ----------------- MAIN LAYOUT ROUTING -----------------
 if not st.session_state.session_started:
-    # Render premium landing screen (blank page style)
-    st.markdown("<br><br><br>", unsafe_allow_html=True)
-    _, login_col, _ = st.columns([1, 1.5, 1])
+    # Render pure white Galaxy WebGL background from React Bits
+    galaxy_component(
+        mouseRepulsion=False,
+        mouseInteraction=False,
+        density=1.5,
+        glowIntensity=0.2,
+        saturation=0.0,
+        hueShift=0.0,
+        starSpeed=0.5,
+        speed=1.0,
+        transparent=True,
+        key="galaxy_frontpage_bg"
+    )
+
+    # Load VAY logo as base64 for clean landing header rendering
+    logo_b64 = ""
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "vay_logo.png")
+    if os.path.exists(logo_path):
+        import base64
+        with open(logo_path, "rb") as img_f:
+            logo_b64 = base64.b64encode(img_f.read()).decode("utf-8")
+
+    # Render premium landing screen with frosted glassmorphism over Galaxy
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    _, login_col, _ = st.columns([1, 1.4, 1])
     with login_col:
-        st.markdown("""
-        <div class="premium-card" style="text-align: center; padding: 40px; margin-bottom: 0;">
-            <h1 style="margin-top: 0; font-weight: 700; font-size: 26px; background: linear-gradient(135deg, #f97316, #7c3aed, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 1px;">VAY ASSISTANT</h1>
-            <p style="color: #9ca3af; font-size: 13px; margin-bottom: 25px;">Start a secure multilingual customer support session</p>
+        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 145px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
+        st.markdown(f"""
+        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 20px 50px rgba(0, 0, 0, 0);">
+            {img_html}
+            <h1 style="margin-top: 0; font-weight: 800; font-size: 28px; background: linear-gradient(135deg, #f97316, #a855f7, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 1.5px;">VAY ASSISTANT</h1>
+            <p style="color: #cbd5e1; font-size: 14px; margin-top: 6px; margin-bottom: 0; letter-spacing: 0.3px;">Next-Gen Multilingual Voice Operator Portal</p>
+            <p style="color: #64748b; font-size: 12px; margin-top: 4px; margin-bottom: 20px;">Powered by Real-Time Neural Speech & Hybrid RAG</p>
         </div>
         """, unsafe_allow_html=True)
         
         with st.container():
-            st.markdown("<div style='padding: 20px; background: rgba(255,255,255,0.01); border: 1px solid rgba(255,255,255,0.04); border-radius: 12px; margin-top: 15px;'>", unsafe_allow_html=True)
+            st.markdown("<div style='padding: 24px; background: rgba(0, 0, 0, 0); border: 0px solid rgba(255,255,255,0); border-top: none; border-radius: 0 0 16px 16px; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 50px rgba(0, 0, 0, 0);'>", unsafe_allow_html=True)
             
             country_code = st.selectbox(
                 "Country Code",
@@ -437,264 +530,210 @@ if not st.session_state.session_started:
                     st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 else:
-    # ----------------- SIDEBAR: SYSTEM DASHBOARD & SETTINGS -----------------
-    with st.sidebar:
-        st.markdown("## ⚙️ Demo Accent Controller")
-        st.markdown("Control what language accent the simulator transcribes when you speak or click.")
-        
-        accent_option = st.radio(
-            "Voice Input Simulation Mode",
-            ("Tamil Speaker Accent", "Hindi Speaker Accent", "English Speaker Accent")
-        )
-        
-        simulated_queries = {
-            "Tamil Speaker Accent": {
-                "lang": "ta",
-                "queries": [
-                    "எனது பில் கட்டணம் எவ்வளவு?",
-                    "599 அன்லிமிட்டெட் திட்டம் விவரம்",
-                    "எனது கணக்கை மூட வேண்டும்",  # Sensitive intent trigger
-                    "சர்வதேச ரோமிங் என்ன?"
-                ]
-            },
-            "Hindi Speaker Accent": {
-                "lang": "hi",
-                "queries": [
-                    "मेरा बिल कितना आया है?",
-                    "599 वाला प्लान क्या है?",
-                    "कनेक्शन बंद करवाना है",  # Sensitive intent trigger
-                    "इंटरनेशनल रोमिंग पैक"
-                ]
-            },
-            "English Speaker Accent": {
-                "lang": "en",
-                "queries": [
-                    "How much is my late payment fee?",
-                    "Tell me about the 599 unlimited data plan",
-                    "I would like to cancel my mobile subscription",  # Sensitive intent trigger
-                    "Is there an option to recharge for international travel?"
-                ]
+    # Hide sidebar and side tab controls completely on the session page
+    st.markdown(
+        """
+        <style>
+            section[data-testid="stSidebar"],
+            [data-testid="collapsedControl"],
+            button[data-testid="stSidebarCollapseButton"] {
+                display: none !important;
+                visibility: hidden !important;
+                width: 0 !important;
             }
-        }
-        
-        current_accent_data = simulated_queries[accent_option]
-        
-        st.markdown("---")
-        st.markdown("## 🛠️ Strands Customization")
-        st.markdown("Tweak physical parameters of the React Bits `<Strands />` visualizer.")
-        
-        color_presets = {
-            "Vaporwave Glow": ["#FF4242", "#7C3AED", "#06B6D4", "#EAB308"],
-            "Sunset Fire": ["#F97316", "#EA580C", "#F43F5E", "#EAB308"],
-            "Ocean Matrix": ["#06B6D4", "#0D9488", "#059669", "#7C3AED"],
-            "Rainbow Spectrum": []
-        }
-        preset = st.selectbox("Color Palette", list(color_presets.keys()))
-        strand_colors = color_presets[preset]
-        
-        strand_count = st.slider("Strand Count", 1, 12, 4)
-        strand_speed = st.slider("Flow Speed", 0.1, 2.0, 0.6, step=0.1)
-        strand_amp = st.slider("Wave Amplitude", 0.2, 3.0, 1.2, step=0.1)
-        strand_thickness = st.slider("Strand Thickness", 0.1, 2.0, 0.8, step=0.1)
-        strand_glow = st.slider("Glow Density", 0.5, 5.0, 2.8, step=0.1)
-        
-        glass_mode = st.toggle("Glass Orb Lens", value=False)
-        glass_refraction = st.slider("Refraction Index", 0.1, 2.0, 1.0) if glass_mode else 1.0
-        glass_size = st.slider("Glass Sphere Size", 0.5, 1.5, 1.0) if glass_mode else 1.0
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-    # ----------------- MAIN LAYOUT: MULTI-COLUMN DESIGN -----------------
-    col_main, col_dashboard = st.columns([5, 4])
+    # Render Aurora WebGL background with authentic Northern Lights colors
+    aurora_component(
+        colorStops=["#00FF87", "#60EFFF", "#7C3AED"],
+        amplitude=1.0,
+        blend=0.55,
+        speed=0.45,
+        key="aurora_session_bg"
+    )
 
-    with col_main:
-        st.markdown("<h2 style='text-align: center; margin-bottom: 0;'>🎙️ VAY Voice Interface</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color:#6b7280; font-size:13px;'>Interact using the microphone visualizer below. Select presets in the sidebar to simulate different accents.</p>", unsafe_allow_html=True)
-        
-        # Renders the Unified Custom Component
-        event_data = strands_component(
-            colors=strand_colors,
-            count=strand_count,
-            speed=strand_speed,
-            amplitude=strand_amp,
-            waviness=1.1,
-            thickness=strand_thickness,
-            glow=strand_glow,
-            taper=3.0,
-            spread=1.1,
-            hueShift=0.0,
-            intensity=0.7,
-            saturation=1.5,
-            opacity=1.0,
-            scale=1.4,
-            glass=glass_mode,
-            refraction=glass_refraction,
-            dispersion=1.0,
-            glassSize=glass_size,
-            status=st.session_state.status,
-            audio_data=st.session_state.audio_to_play,
-            key=f"strands_element_{st.session_state.component_key}"
+    # Fixed permanent visualizer configuration
+    strand_colors = ["#FF4242", "#7C3AED", "#06B6D4", "#EAB308"]
+    strand_count = 4
+    strand_amp = 1.0
+    strand_thickness = 0.8
+    strand_glow = 1.20
+    glass_mode = False
+    glass_refraction = 1.0
+    glass_size = 1.0
+
+    # ---- Status-aware strand speed: slow idle, gently faster when active ----
+    _status = st.session_state.status
+    if _status in ("listening", "speaking"):
+        strand_speed = 0.1  # slightly faster, but still smooth and steady
+    elif _status == "thinking":
+        strand_speed = 0.1  # medium while processing
+    else:
+        strand_speed = 0.1 # slow, calm idle flow
+
+    # Simulated accent data (used internally by audio_recorded pipeline)
+    current_accent_data = {
+        "lang": "en",
+        "queries": [
+            "How much is my late payment fee?",
+            "Tell me about the 599 unlimited data plan",
+            "I would like to cancel my mobile subscription",
+            "Is there an option to recharge for international travel?"
+        ]
+    }
+
+    # ----------------- PHONE NUMBER BOX — TOP RIGHT (Streamlit-compatible) -----------------
+    # Inject a global CSS rule + place the box in a full-width row floated right
+    _phone = st.session_state.get("phone_number", "")
+    st.markdown(
+        f"""
+        <style>
+        /* Force phone pill to stay fixed in viewport top-right, above Streamlit's toolbar */
+        #vay-phone-pill {{
+            position: fixed;
+            top: 10px;
+            right: 20px;
+            z-index: 999999;
+            background: rgba(12, 12, 18, 0.92);
+            border: 1.5px solid #f97316;
+            border-radius: 32px;
+            padding: 7px 20px 7px 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 0 18px rgba(249,115,22,0.25), 0 2px 8px rgba(0,0,0,0.6);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            font-family: 'Inter', sans-serif;
+            min-width: 160px;
+            pointer-events: none;
+        }}
+        #vay-phone-pill .icon {{
+            font-size: 15px;
+            animation: pulse-icon 2.5s ease-in-out infinite;
+        }}
+        #vay-phone-pill .num {{
+            color: #f97316;
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.6px;
+        }}
+        #vay-phone-pill .label {{
+            color: #6b7280;
+            font-size: 10px;
+            font-weight: 500;
+            display: block;
+            line-height: 1.1;
+        }}
+        @keyframes pulse-icon {{
+            0%, 100% {{ opacity: 1; }}
+            50%       {{ opacity: 0.5; }}
+        }}
+        </style>
+        <div id="vay-phone-pill">
+            <span class="icon">📞</span>
+            <div>
+                <span class="label">ACTIVE SESSION</span>
+                <span class="num">{_phone}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+    # ----------------- MAIN VOICE INTERFACE (full-width) -----------------
+    # Load VAY logo
+    _logo_b64 = ""
+    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "vay_logo.png")
+    if os.path.exists(_logo_path):
+        import base64 as _b64
+        with open(_logo_path, "rb") as _lf:
+            _logo_b64 = _b64.b64encode(_lf.read()).decode("utf-8")
+
+    if _logo_b64:
+        st.markdown(
+            f"<div style='text-align:center; margin-bottom:4px;'>"
+            f"<img src='data:image/png;base64,{_logo_b64}' "
+            f"style='width:160px; height:auto; border-radius:12px; "
+            f"box-shadow:0 6px 24px rgba(0,0,0,0.5); display:inline-block;'>"
+            f"</div>",
+            unsafe_allow_html=True
         )
-        
-        # Process return events from custom WebGL component
-        if event_data is not None:
-            event_name = event_data.get("event")
-            
+    else:
+        st.markdown(
+            "<h2 style='text-align:center; margin-bottom:0;'>🎙️ VAY - Voice Assistant for you</h2>",
+            unsafe_allow_html=True
+        )
+
+    # Render Strands visualizer
+    event_data = strands_component(
+        colors=strand_colors,
+        count=strand_count,
+        speed=strand_speed,
+        amplitude=strand_amp,
+        waviness=1.1,
+        thickness=strand_thickness,
+        glow=strand_glow,
+        taper=3.0,
+        spread=1.1,
+        hueShift=0.0,
+        intensity=0.7,
+        saturation=1.5,
+        opacity=1.0,
+        scale=1.4,
+        glass=glass_mode,
+        refraction=glass_refraction,
+        dispersion=1.0,
+        glassSize=glass_size,
+        status=st.session_state.status,
+        audio_data=st.session_state.audio_to_play,
+        key=f"strands_element_{st.session_state.component_key}"
+    )
+
+    # Process events from the WebGL component safely with event ID deduplication
+    if event_data is not None:
+        event_id = event_data.get("id")
+        event_name = event_data.get("event")
+
+        # Only process if this is a newly received event that has not been handled
+        if event_id and event_id != st.session_state.get("last_processed_event_id"):
+            st.session_state.last_processed_event_id = event_id
+
             if event_name == "mic_start":
-                st.session_state.status = "listening"
-                st.session_state.audio_to_play = None
-                st.rerun()
-                
+                if st.session_state.status != "listening":
+                    st.session_state.status = "listening"
+                    st.session_state.audio_to_play = None
+                    st.rerun()
+
+            elif event_name in ("mic_pause", "mic_stop"):
+                if st.session_state.status != "idle":
+                    st.session_state.status = "idle"
+                    st.session_state.audio_to_play = None
+                    st.rerun()
+
             elif event_name == "audio_recorded":
                 st.session_state.status = "thinking"
-                # Get simulated transcript based on the selected speaker accent
-                # To showcase full intelligence, we select a query randomly or cyclically from list
                 import random
                 simulated_query = random.choice(current_accent_data["queries"])
-                
-                # Execute pipeline
                 run_multilingual_pipeline(simulated_query, detected_lang=current_accent_data["lang"])
-                
+
             elif event_name == "audio_finished":
+                if st.session_state.status != "idle":
+                    st.session_state.status = "idle"
+                    st.session_state.audio_to_play = None
+                    st.rerun()
+
+            elif event_name in ("end_session", "escalate_click"):
+                st.session_state.session_started = False
+                st.session_state.phone_number = ""
+                st.session_state.chat_history = []
                 st.session_state.status = "idle"
                 st.session_state.audio_to_play = None
+                st.session_state.component_key += 1
                 st.rerun()
-                
-            elif event_name == "escalate_click":
-                escalate_session("User requested immediate human handoff.")
 
-        # In-App Text Fallback Query Box
-        st.markdown("---")
-        st.markdown("### 💬 Text Query Fallback")
-        text_query = st.chat_input("Type your customer service query here (Hindi, Tamil, or English)...")
-        if text_query:
-            st.session_state.status = "thinking"
-            # Determine language simply
-            lang_id = "en"
-            # Simple character checks to identify script
-            tamil_chars = set(range(0x0B80, 0x0BFF))
-            hindi_chars = set(range(0x0900, 0x097F))
-            for char in text_query:
-                val = ord(char)
-                if val in tamil_chars:
-                    lang_id = "ta"
-                    break
-                elif val in hindi_chars:
-                    lang_id = "hi"
-                    break
-            
-            # Execute pipeline
-            run_multilingual_pipeline(text_query, detected_lang=lang_id)
 
-        # State Machine Visualizer
-        st.markdown("### 🛠️ State Machine Architecture")
-        
-        # Dynamic class markers based on status
-        is_vad = "active" if st.session_state.status == "listening" else ""
-        is_asr = "active" if st.session_state.status == "thinking" else ""
-        is_rag = "active-llm" if st.session_state.status == "thinking" and st.session_state.current_pipeline_data["action"] == "RAG Search" else ""
-        is_tts = "active-tts" if st.session_state.status == "speaking" else ""
-        is_handoff = "active" if st.session_state.status == "handoff" else ""
-        
-        st.markdown(f"""
-        <div class="pipeline-container">
-            <div class="pipeline-node {is_vad}">VAD Detection</div>
-            <div style="color:#4b5563">→</div>
-            <div class="pipeline-node {is_asr}">Language ID / ASR</div>
-            <div style="color:#4b5563">→</div>
-            <div class="pipeline-node {is_rag}">Hybrid RAG Gate</div>
-            <div style="color:#4b5563">→</div>
-            <div class="pipeline-node {is_tts}">Language TTS</div>
-            <div style="color:#4b5563">→</div>
-            <div class="pipeline-node {is_handoff}">Human Handoff</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col_dashboard:
-        st.markdown("<h2 style='text-align: center; margin-bottom: 0;'>🛡️ Live Agent Dashboard</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color:#6b7280; font-size:13px;'>Real-time orchestration logs and human agent queue escalation analytics.</p>", unsafe_allow_html=True)
-        
-        # Pipeline Metrics Panel
-        st.markdown("<div class='premium-card'>", unsafe_allow_html=True)
-        st.markdown("<h3>🎯 Real-time Call Intelligence</h3>", unsafe_allow_html=True)
-        st.markdown(f"**Active Session Customer:** `{st.session_state.phone_number}`")
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            st.markdown("Detected Language")
-            st.markdown(f"<p class='metric-value'>{st.session_state.current_pipeline_data['language']}</p>", unsafe_allow_html=True)
-            st.markdown("ASR Model Route")
-            st.write(f"`{st.session_state.current_pipeline_data['route']}`")
-        with mc2:
-            st.markdown("Confidence Score")
-            st.markdown(f"<p class='metric-value'>{st.session_state.current_pipeline_data['confidence'] * 100}%</p>", unsafe_allow_html=True)
-            st.markdown("Intent Classification")
-            st.write(f"`{st.session_state.current_pipeline_data['intent']}`")
-            
-        st.markdown("<div style='margin-top: 15px;'><strong>Current Pipeline Node:</strong></div>", unsafe_allow_html=True)
-        st.write(f"`{st.session_state.current_pipeline_data['action']}`")
-        
-        st.markdown("<strong>Transcription (Raw):</strong>")
-        st.write(f"*{st.session_state.current_pipeline_data['raw_text']}*")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Escalated Human Handoff Queue
-        st.markdown("<div class='premium-card'>", unsafe_allow_html=True)
-        st.markdown("<h3>🚨 Escalated Sessions Queue</h3>", unsafe_allow_html=True)
-        
-        if not st.session_state.escalation_queue:
-            st.info("No active escalations. System is operating within safety thresholds.")
-        else:
-            for idx, item in enumerate(st.session_state.escalation_queue):
-                st.markdown(f"""
-                <div class="escalated-item">
-                    <div style="display:flex; justify-content:space-between; font-weight:600; margin-bottom: 4px;">
-                        <span style="color:#ef4444;">Session #{len(st.session_state.escalation_queue)-idx}</span>
-                        <span style="color:#6b7280; font-size:11px;">{item['timestamp']}</span>
-                    </div>
-                    <div><strong>Query:</strong> "{item['raw_text']}"</div>
-                    <div style="font-size:11px; margin-top:4px; color:#9ca3af;">
-                        Lang: {item['language']} | Intent: {item['intent']} | Reason: <span style="color:#f87171;">{item['reason']}</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-        if st.button("Clear Escalation Queue", type="secondary"):
-            st.session_state.escalation_queue = []
-            st.rerun()
-            
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Chat Transcript Log
-        st.markdown("<div class='premium-card'>", unsafe_allow_html=True)
-        st.markdown("<h3>📝 Transcript History</h3>", unsafe_allow_html=True)
-        
-        if not st.session_state.chat_history:
-            st.caption("No dialog active yet. Start speaking or typing a query to begin.")
-        else:
-            for msg in st.session_state.chat_history:
-                if msg["speaker"] == "user":
-                    st.write(f"🗣️ **User ({msg['lang']}):** {msg['text']}")
-                elif msg["speaker"] == "assistant":
-                    st.write(f"🤖 **Assistant ({msg['lang']}):** {msg['text']}")
-                else:
-                    st.write(msg["text"])
-                    
-        if st.button("Reset Conversation", type="primary"):
-            st.session_state.chat_history = []
-            st.session_state.status = "idle"
-            st.session_state.audio_to_play = None
-            st.session_state.current_pipeline_data = {
-                "language": "N/A",
-                "route": "N/A",
-                "intent": "N/A",
-                "confidence": 0.0,
-                "raw_text": "N/A",
-                "clean_text": "N/A",
-                "action": "N/A",
-                "entities": {}
-            }
-            st.session_state.component_key += 1 # Force component reset
-            st.rerun()
-            
-        st.markdown("</div>", unsafe_allow_html=True)

@@ -363,30 +363,6 @@
       box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
     }
 
-    /* Waveform visualizer container (optional layout addition if needed) */
-    .waveform-visualizer {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-      height: 20px;
-      margin-top: 8px;
-    }
-
-    .wave-bar {
-      width: 3px;
-      height: 4px;
-      background-color: var(--text-sub);
-      border-radius: 2px;
-      transition: height 0.1s ease;
-    }
-
-    .status-listening .wave-bar {
-      background-color: #f97316;
-    }
-
-    .status-speaking .wave-bar {
-      background-color: #06b6d4;
-    }
   </style>
 </head>
 
@@ -402,16 +378,6 @@
 
     <div class="controls-center">
       <div class="status-label" id="status-txt">READY</div>
-
-      <div class="waveform-visualizer" id="wave-vis" style="display: none;">
-        <div class="wave-bar" style="height: 6px;"></div>
-        <div class="wave-bar" style="height: 12px;"></div>
-        <div class="wave-bar" style="height: 8px;"></div>
-        <div class="wave-bar" style="height: 14px;"></div>
-        <div class="wave-bar" style="height: 18px;"></div>
-        <div class="wave-bar" style="height: 10px;"></div>
-        <div class="wave-bar" style="height: 4px;"></div>
-      </div>
     </div>
 
     <div class="bottom-controls">
@@ -612,12 +578,12 @@
     // Component configuration properties with default values
     let config = {
       colors: ['#FF4242', '#7C3AED', '#06B6D4', '#EAB308'],
-      count: 3,
-      speed: 0.5,
+      count: 4,
+      speed: 0.1,
       amplitude: 1.0,
-      waviness: 1.0,
-      thickness: 0.7,
-      glow: 2.6,
+      waviness: 1.1,
+      thickness: 0.8,
+      glow: 1.2,
       taper: 3.0,
       spread: 1.0,
       hueShift: 0.0,
@@ -656,9 +622,6 @@
     const subStatusTxt = document.getElementById('sub-status');
     const micBtn = document.getElementById('mic-btn');
     const endBtn = document.getElementById('end-btn');
-    const waveVis = document.getElementById('wave-vis');
-    const waveBars = document.querySelectorAll('.wave-bar');
-
     // UI helper for icon updates
     function setMicIcon(iconType) {
       const micSvg = document.getElementById('mic-svg');
@@ -681,32 +644,31 @@
 
       if (state === 'idle') {
         setMicIcon('mic');
-        subStatusTxt.textContent = 'Voice Interface Active';
-        waveVis.style.display = 'none';
+        subStatusTxt.textContent = 'Microphone Paused (Click to speak)';
       } else if (state === 'listening') {
         setMicIcon('stop');
-        subStatusTxt.textContent = 'Speak now...';
-        waveVis.style.display = 'flex';
+        subStatusTxt.textContent = 'Listening... (Click mic to pause)';
       } else if (state === 'thinking') {
         setMicIcon('thinking');
         subStatusTxt.textContent = 'Processing request...';
-        waveVis.style.display = 'none';
       } else if (state === 'speaking') {
         setMicIcon('mic');
         subStatusTxt.textContent = 'Assistant responding...';
-        waveVis.style.display = 'flex';
-      } else if (state === 'handoff') {
+      } else if (state === 'handoff' || state === 'ended') {
         setMicIcon('mic');
-        subStatusTxt.textContent = 'Escalating to human agent...';
-        waveVis.style.display = 'none';
+        subStatusTxt.textContent = 'Call Ended';
       }
 
       // Update iframe height automatically
       sendFrameHeight();
     }
 
-    // Send messages back to Streamlit
+    // Send messages back to Streamlit with unique event ID to avoid re-triggering on rerun
     function sendMessageToStreamlit(data) {
+      if (!data) data = {};
+      if (!data.id) {
+        data.id = Date.now() + "_" + Math.random().toString(36).substring(2, 9);
+      }
       window.parent.postMessage({
         isStreamlitMessage: true,
         type: "streamlit:setComponentValue",
@@ -806,9 +768,9 @@
     const update = t => {
       animateId = requestAnimationFrame(update);
 
-      // Interpolate audio reactivity modifiers smoothly
-      currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.15;
-      currentAmpMod += (targetAmpMod - currentAmpMod) * 0.15;
+      // Interpolate audio reactivity smoothly — low factor = very steady, no jolting
+      currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.04;
+      currentAmpMod   += (targetAmpMod   - currentAmpMod)   * 0.04;
 
       program.uniforms.uTime.value = t * 0.001;
       program.uniforms.uColors.value = buildPalette(config.colors);
@@ -842,6 +804,7 @@
       }
 
       // If active listening or speaking, run audio FFT visualizer
+
       if (analyserNode && (config.status === 'listening' || config.status === 'speaking')) {
         const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
         analyserNode.getByteFrequencyData(dataArray);
@@ -853,18 +816,11 @@
         }
         const avg = sum / dataArray.length;
 
-        // Drive wave visualizer UI bars
-        for (let i = 0; i < waveBars.length; i++) {
-          const index = Math.floor((i / waveBars.length) * dataArray.length * 0.4); // Focus on mid-bass frequencies
-          const height = Math.max(4, (dataArray[index] / 255) * 32);
-          waveBars[i].style.height = `${height}px`;
-        }
-
-        // Apply reactiveness to Strands
-        targetAmpMod = (avg / 255) * 2.0;
-        targetSpeedMod = (avg / 255) * 1.5;
+        // Very subtle reactivity — strands breathe gently, never jolt
+        targetAmpMod   = Math.min((avg / 255) * 0.3, 0.25);  // max +0.25 amplitude
+        targetSpeedMod = Math.min((avg / 255) * 0.15, 0.12); // max +0.12 speed
       } else {
-        targetAmpMod = 0;
+        targetAmpMod   = 0;
         targetSpeedMod = 0;
       }
     };
@@ -948,13 +904,40 @@
           micProcessor.connect(audioContext.destination);
 
           // Send listening state update to Streamlit
+          config.status = 'listening';
+          updateUIState('listening');
           sendMessageToStreamlit({ event: "mic_start" });
         })
         .catch(err => {
           console.error("Mic access denied or error:", err);
-          alert("Error: Microphone access is required to use the voice assistant.");
+          config.status = 'idle';
           updateUIState('idle');
         });
+    }
+
+    function pauseAudioRecording() {
+      if (isRecording) {
+        isRecording = false;
+
+        // Stop track stream safely
+        if (micStream) {
+          try {
+            micStream.getTracks().forEach(track => track.stop());
+          } catch (e) { }
+          micStream = null;
+        }
+        if (micProcessor) {
+          try {
+            micProcessor.disconnect();
+          } catch (e) { }
+          micProcessor = null;
+        }
+      }
+
+      // Update UI state to idle / paused and inform Streamlit
+      config.status = 'idle';
+      updateUIState('idle');
+      sendMessageToStreamlit({ event: "mic_pause" });
     }
 
     function stopAudioRecording() {
@@ -963,10 +946,16 @@
 
       // Stop track stream
       if (micStream) {
-        micStream.getTracks().forEach(track => track.stop());
+        try {
+          micStream.getTracks().forEach(track => track.stop());
+        } catch (e) { }
+        micStream = null;
       }
       if (micProcessor) {
-        micProcessor.disconnect();
+        try {
+          micProcessor.disconnect();
+        } catch (e) { }
+        micProcessor = null;
       }
 
       // Convert buffer chunks to single Float32Array
@@ -1015,6 +1004,8 @@
           analyserNode.connect(audioContext.destination);
 
           sourceNode.onended = () => {
+            config.status = 'idle';
+            updateUIState('idle');
             sendMessageToStreamlit({ event: "audio_finished" });
           };
 
@@ -1023,6 +1014,8 @@
         })
         .catch(err => {
           console.error("Audio playback error:", err);
+          config.status = 'idle';
+          updateUIState('idle');
           sendMessageToStreamlit({ event: "audio_finished" });
         });
     }
@@ -1083,38 +1076,36 @@
       return new Blob([view], { type: 'audio/wav' });
     }
 
-    // Toggle Mic Event
+    // Toggle Mic Event: Click to Start Listening, Click again to Pause Listening
     micBtn.addEventListener('click', () => {
-      if (config.status === 'idle') {
+      if (isRecording || config.status === 'listening') {
+        pauseAudioRecording();
+      } else {
         startAudioRecording();
-      } else if (config.status === 'listening') {
-        stopAudioRecording();
       }
     });
 
     // End/Handoff Event
     endBtn.addEventListener('click', () => {
-      // Stop playback or recording if running
-      if (isRecording) stopAudioRecording();
+      // Pause mic if active
+      if (isRecording) {
+        isRecording = false;
+        if (micStream) {
+          try { micStream.getTracks().forEach(track => track.stop()); } catch (e) { }
+          micStream = null;
+        }
+        if (micProcessor) {
+          try { micProcessor.disconnect(); } catch (e) { }
+          micProcessor = null;
+        }
+      }
       if (activeAudioSource) {
         try { activeAudioSource.stop(); } catch (e) { }
       }
 
-      // Cleanly release AudioContext asynchronously
-      if (audioContext) {
-        try {
-          audioContext.close();
-        } catch (e) {
-          console.error("Error calling close on AudioContext:", e);
-        }
-        audioContext = null;
-        analyserNode = null;
-      }
-
-      // Notify Streamlit after a small delay to allow resources to start releasing
-      setTimeout(() => {
-        sendMessageToStreamlit({ event: "escalate_click" });
-      }, 50);
+      config.status = 'idle';
+      updateUIState('idle');
+      sendMessageToStreamlit({ event: "end_session" });
     });
 
     // Initialize communication with Streamlit
