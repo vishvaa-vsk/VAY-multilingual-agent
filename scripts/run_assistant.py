@@ -36,13 +36,18 @@ USAGE
 
 from __future__ import annotations
 
+import argparse
 import os
+import re
 
 from dotenv import load_dotenv
-from langgraph.graph import END, START, StateGraph
+from langchain_core.messages import AIMessage, HumanMessage
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
+from tools import (
+    SessionContext,
+)
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the
@@ -108,69 +113,109 @@ CLARIFY_TEMPLATES = {
 }
 
 
-from vay.graph.nodes.agents import billing_node, complaints_node, coverage_node, plans_node
-from vay.graph.nodes.orchestrator import orchestrator_node
-from vay.graph.nodes.utils import (
-    clarify_node,
-    closing_node,
-    guardrail_node,
-    human_handoff_node,
-    route_after_guardrail,
-    route_after_orchestrator,
-    tts_node,
-)
+from vay.graph.utils import localized, trim_history
+
 from vay.graph.state import GraphState
+from vay.graph.workflow import build_graph
+from vay.tools.session import SessionContext
 
 
-def build_graph():
-    graph = StateGraph(GraphState)
+def _prompt_phone_number() -> str:
+    while True:
+        phone = input("Caller phone number (10 digits): ").strip()
+        if re.fullmatch(r"\d{10}", phone):
+            return phone
+        print("  Please enter exactly 10 digits.")
 
-    graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("billing", billing_node)
-    graph.add_node("plans", plans_node)
-    graph.add_node("complaints", complaints_node)
-    graph.add_node("coverage", coverage_node)
-    graph.add_node("guardrail", guardrail_node)
-    graph.add_node("human_handoff", human_handoff_node)
-    graph.add_node("clarify", clarify_node)
-    graph.add_node("closing", closing_node)
-    graph.add_node("tts", tts_node)
 
-    graph.add_edge(START, "orchestrator")
-    graph.add_conditional_edges(
-        "orchestrator",
-        route_after_orchestrator,
-        {
-            "billing": "billing",
-            "plans": "plans",
-            "complaints": "complaints",
-            "coverage": "coverage",
-            "human_handoff": "human_handoff",
-            "clarify": "clarify",
-            "closing": "closing",
-        },
+def main():
+    parser = argparse.ArgumentParser(
+        description="Nexatel orchestrator + sub-agents voice-assistant loop."
+    )
+    parser.add_argument(
+        "--min_similarity",
+        type=float,
+        default=DEFAULT_MIN_SIMILARITY,
+        help="Confidence gate threshold on a sub-agent's best RAG hit.",
+    )
+    parser.add_argument("--max_history_turns", type=int, default=DEFAULT_MAX_HISTORY_TURNS)
+    parser.add_argument(
+        "--show_debug", action="store_true", help="Print orchestrator JSON and tool calls."
+    )
+    parser.add_argument(
+        "--language", default=None, help="Skip the language prompt; use this ISO 639-1 code."
+    )
+    parser.add_argument(
+        "--phone", default=None, help="Skip the phone-number prompt; use this 10-digit number."
+    )
+    args = parser.parse_args()
+
+    if not GROQ_API_KEY:
+        print("ERROR: GROQ_API_KEY environment variable is not set.")
+        return
+
+    graph = build_graph()
+
+    print(
+        "Nexatel Voice Assistant — one continuous call. Type a transcribed customer utterance below."
+    )
+    print("(dev shortcut: type 'exit' to kill the script without a proper call-ending flow)\n")
+
+    phone_number = (
+        args.phone if args.phone and re.fullmatch(r"\d{10}", args.phone) else _prompt_phone_number()
+    )
+    language = (
+        args.language or input("Caller language code (e.g. en, hi, ta): ").strip().lower() or "en"
     )
 
-    for node in ("billing", "plans", "complaints", "coverage"):
-        graph.add_edge(node, "guardrail")
+    # One SessionContext for the whole call -- carries identity/consent state (pending_action,
+    # verified, escalation) across turns. verified=True stands in for real identity
+    # verification in this mock system (see tools.py's module docstring).
+    session = SessionContext(phone_number=phone_number, verified=True, language=language)
+    conversation_history: list = []
 
-    graph.add_conditional_edges(
-        "guardrail",
-        route_after_guardrail,
-        {
-            "human_handoff": "human_handoff",
-            "tts": "tts",
-        },
-    )
+    while True:
+        try:
+            user_text = input("User speaks (transcribed text): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
 
-    graph.add_edge("human_handoff", "tts")
-    graph.add_edge("clarify", "tts")
-    graph.add_edge("closing", "tts")
-    graph.add_edge("tts", END)
+        if not user_text:
+            continue
+        if user_text.lower() in ("exit", "quit"):
+            break
 
-    return graph.compile()
+        state: GraphState = {
+            "phone_number": phone_number,
+            "language": language,
+            "transcript": user_text,
+            "conversation_history": conversation_history,
+            "show_debug": args.show_debug,
+            "min_similarity": args.min_similarity,
+            "session": session,
+        }
+
+        result = graph.invoke(state)
+        reply = result.get("final_reply") or localized(
+            HANDOFF_MESSAGE_TEMPLATES, result.get("language", language)
+        )
+        print(f"Assistant: {reply}\n")
+
+        conversation_history.append(HumanMessage(content=user_text))
+        conversation_history.append(AIMessage(content=reply))
+        conversation_history = trim_history(conversation_history, args.max_history_turns)
+
+        if result.get("call_end_requested"):
+            print("--- Call ended by customer. Session terminated. ---")
+            break
+        if result.get("handoff"):
+            print(
+                f"--- Call transferred to a human agent ({result.get('handoff_reason', 'n/a')}). "
+                f"Session terminated. See {HANDOFF_LOG_PATH} for the escalation packet. ---"
+            )
+            break
 
 
-# ---------------------------------------------------------------------------
-# Main loop -- one run = one continuous call, looping utterance by utterance
-# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()

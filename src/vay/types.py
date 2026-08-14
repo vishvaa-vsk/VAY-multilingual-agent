@@ -13,7 +13,6 @@ class LanguageTier(StrEnum):
     TIER_2 = "tier_2"  # English and fallback (Whisper)
 
 
-
 class ASRResult(BaseModel):
     """Raw transcription output from an ASR engine."""
 

@@ -17,14 +17,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import chroma_setup
-import content_manager
 from langchain_core.tools import tool
+
+from vay.rag import manager as content_manager
 
 
 @dataclass
 class RetrievalTracker:
     """Records the best similarity score seen across RAG tool calls in a turn,
     so the graph's confidence-gate node can act on it after the sub-agent runs."""
+
     last_score: float = 0.0
     called: bool = False
 
@@ -54,7 +56,9 @@ def _format_hits(results: dict, tracker: RetrievalTracker) -> str:
     return "\n\n".join(blocks)
 
 
-def _make_retriever(collection_name: str, tool_name: str, description: str, tracker: RetrievalTracker):
+def _make_retriever(
+    collection_name: str, tool_name: str, description: str, tracker: RetrievalTracker
+):
     def _retriever(query: str) -> str:
         results = content_manager.read(query, n_results=3, collection_name=collection_name)
         return _format_hits(results, tracker)

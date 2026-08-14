@@ -39,10 +39,11 @@ from __future__ import annotations
 import os
 
 from dotenv import load_dotenv
-from langgraph.graph import END, START, StateGraph
+from langchain_core.messages import HumanMessage, SystemMessage
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
+import tts
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the
@@ -108,69 +109,135 @@ CLARIFY_TEMPLATES = {
 }
 
 
-from vay.graph.nodes.agents import billing_node, complaints_node, coverage_node, plans_node
-from vay.graph.nodes.orchestrator import orchestrator_node
-from vay.graph.nodes.utils import (
-    clarify_node,
-    closing_node,
-    guardrail_node,
-    human_handoff_node,
-    route_after_guardrail,
-    route_after_orchestrator,
-    tts_node,
-)
 from vay.graph.state import GraphState
+from vay.graph.utils import (
+    CLARIFY_TEMPLATES,
+    CLOSING_FALLBACK_TEMPLATES,
+    DEFAULT_NLU_CONFIDENCE,
+    HANDOFF_MESSAGE_TEMPLATES,
+    HUMAN_REQUEST_PATTERNS,
+    PII_LEAK_PATTERNS,
+    SUBAGENT_SYSTEM_PROMPT_TEMPLATE,
+    UNCERTAINTY_PATTERNS,
+    _llm,
+    localized,
+    log_handoff,
+)
 
 
-def build_graph():
-    graph = StateGraph(GraphState)
+def guardrail_node(state: GraphState) -> GraphState:
+    """Layer 3 output guardrail: confidence gate + handoff-gate + a lightweight
+    PII/consent scan, per kb_docs/compliance_policy.md."""
+    if state.get("handoff"):
+        return {}  # a sub-agent tool already requested escalation
 
-    graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("billing", billing_node)
-    graph.add_node("plans", plans_node)
-    graph.add_node("complaints", complaints_node)
-    graph.add_node("coverage", coverage_node)
-    graph.add_node("guardrail", guardrail_node)
-    graph.add_node("human_handoff", human_handoff_node)
-    graph.add_node("clarify", clarify_node)
-    graph.add_node("closing", closing_node)
-    graph.add_node("tts", tts_node)
+    draft = state.get("draft_reply", "")
+    min_similarity = state.get("min_similarity", DEFAULT_MIN_SIMILARITY)
 
-    graph.add_edge(START, "orchestrator")
-    graph.add_conditional_edges(
-        "orchestrator",
-        route_after_orchestrator,
+    if state.get("retrieval_score", 0.0) < min_similarity:
+        return {
+            "handoff": True,
+            "handoff_reason": "Low retrieval confidence on knowledge-base grounding.",
+        }
+
+    if HUMAN_REQUEST_PATTERNS.search(state["transcript"]) or HUMAN_REQUEST_PATTERNS.search(draft):
+        return {"handoff": True, "handoff_reason": "Customer requested a human agent."}
+
+    if UNCERTAINTY_PATTERNS.search(draft):
+        return {
+            "handoff": True,
+            "handoff_reason": "Assistant signaled uncertainty in its draft reply.",
+        }
+
+    if PII_LEAK_PATTERNS.search(draft):
+        return {
+            "handoff": True,
+            "handoff_reason": "Draft reply referenced sensitive credentials (guardrail block).",
+        }
+
+    return {"final_reply": draft}
+
+
+def human_handoff_node(state: GraphState) -> GraphState:
+    log_handoff(
         {
-            "billing": "billing",
-            "plans": "plans",
-            "complaints": "complaints",
-            "coverage": "coverage",
-            "human_handoff": "human_handoff",
-            "clarify": "clarify",
-            "closing": "closing",
-        },
+            "phone_number": state["phone_number"],
+            "transcript": state["transcript"],
+            "intent": state.get("intent"),
+            "entities": state.get("entities"),
+            "normalized_query": state.get("normalized_query"),
+            "route": state.get("route"),
+            "reason": state.get("handoff_reason", "unspecified"),
+            "draft_reply_at_handoff": state.get("draft_reply"),
+        }
     )
+    return {
+        "final_reply": localized(HANDOFF_MESSAGE_TEMPLATES, state.get("language", "en")),
+        "handoff": True,
+    }
 
-    for node in ("billing", "plans", "complaints", "coverage"):
-        graph.add_edge(node, "guardrail")
 
-    graph.add_conditional_edges(
-        "guardrail",
-        route_after_guardrail,
-        {
-            "human_handoff": "human_handoff",
-            "tts": "tts",
-        },
+def clarify_node(state: GraphState) -> GraphState:
+    """A human-agent-free re-prompt for a turn the orchestrator couldn't understand/route
+    confidently, used instead of an immediate human_handoff (see route_after_orchestrator) --
+    per the solution doc's Layer 1 guidance ("ask to repeat" before escalating) and so a single
+    garbled, off-topic, or rude utterance doesn't consume a live agent's time. Deliberately a
+    fixed localized template, not an LLM call: there's nothing to ground yet this turn."""
+    return {"final_reply": localized(CLARIFY_TEMPLATES, state["language"])}
+
+
+def closing_node(state: GraphState) -> GraphState:
+    llm = _llm()
+    messages = [
+        SystemMessage(
+            content=SUBAGENT_SYSTEM_PROMPT_TEMPLATE.format(
+                agent_name="call-closing assistant",
+                phone_number=state["phone_number"],
+                language=state["language"],
+            )
+        )
+    ]
+    messages.extend(state.get("conversation_history", []))
+    messages.append(
+        HumanMessage(
+            content=f"Customer's latest message: {state['transcript']}\n\n"
+            "The customer is ending the call. Reply with ONE brief, warm closing line "
+            "thanking them for calling Nexatel -- no new information, no questions back."
+        )
     )
+    fallback = localized(CLOSING_FALLBACK_TEMPLATES, state["language"])
+    try:
+        reply = llm.invoke(messages).content.strip()
+    except Exception:
+        reply = fallback
+    return {"final_reply": reply or fallback}
 
-    graph.add_edge("human_handoff", "tts")
-    graph.add_edge("clarify", "tts")
-    graph.add_edge("closing", "tts")
-    graph.add_edge("tts", END)
 
-    return graph.compile()
+def tts_node(state: GraphState) -> GraphState:
+    tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
+    return {}
 
 
 # ---------------------------------------------------------------------------
-# Main loop -- one run = one continuous call, looping utterance by utterance
+# Routing (conditional edges)
+# ---------------------------------------------------------------------------
+def route_after_orchestrator(state: GraphState) -> str:
+    if state.get("call_end_requested"):
+        return "closing"
+    if state.get("sensitive"):
+        return "human_handoff"
+    if state.get("route") == "unclear" or state.get("nlu_confidence", 0.0) < DEFAULT_NLU_CONFIDENCE:
+        # Only actually escalate once unclear_escalate says so (repeated failure to
+        # understand, or an explicit human request) -- otherwise give the customer one more
+        # chance via a human-free clarify re-prompt. See orchestrator_node.
+        return "human_handoff" if state.get("unclear_escalate") else "clarify"
+    return state["route"]  # billing | plans | complaints | coverage
+
+
+def route_after_guardrail(state: GraphState) -> str:
+    return "human_handoff" if state.get("handoff") else "tts"
+
+
+# ---------------------------------------------------------------------------
+# Build the graph
 # ---------------------------------------------------------------------------

@@ -39,10 +39,21 @@ from __future__ import annotations
 import os
 
 from dotenv import load_dotenv
-from langgraph.graph import END, START, StateGraph
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
+from rag_tools import (
+    build_billing_rag_tool,
+    build_product_rag_tool,
+    build_support_rag_tool,
+    build_technical_rag_tool,
+)
+from tools import (
+    build_billing_tools,
+    build_complaints_tools,
+    build_coverage_tools,
+    build_plans_tools,
+)
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the
@@ -108,69 +119,21 @@ CLARIFY_TEMPLATES = {
 }
 
 
-from vay.graph.nodes.agents import billing_node, complaints_node, coverage_node, plans_node
-from vay.graph.nodes.orchestrator import orchestrator_node
-from vay.graph.nodes.utils import (
-    clarify_node,
-    closing_node,
-    guardrail_node,
-    human_handoff_node,
-    route_after_guardrail,
-    route_after_orchestrator,
-    tts_node,
-)
+from vay.graph.nodes.orchestrator import _run_subagent
 from vay.graph.state import GraphState
 
 
-def build_graph():
-    graph = StateGraph(GraphState)
-
-    graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("billing", billing_node)
-    graph.add_node("plans", plans_node)
-    graph.add_node("complaints", complaints_node)
-    graph.add_node("coverage", coverage_node)
-    graph.add_node("guardrail", guardrail_node)
-    graph.add_node("human_handoff", human_handoff_node)
-    graph.add_node("clarify", clarify_node)
-    graph.add_node("closing", closing_node)
-    graph.add_node("tts", tts_node)
-
-    graph.add_edge(START, "orchestrator")
-    graph.add_conditional_edges(
-        "orchestrator",
-        route_after_orchestrator,
-        {
-            "billing": "billing",
-            "plans": "plans",
-            "complaints": "complaints",
-            "coverage": "coverage",
-            "human_handoff": "human_handoff",
-            "clarify": "clarify",
-            "closing": "closing",
-        },
-    )
-
-    for node in ("billing", "plans", "complaints", "coverage"):
-        graph.add_edge(node, "guardrail")
-
-    graph.add_conditional_edges(
-        "guardrail",
-        route_after_guardrail,
-        {
-            "human_handoff": "human_handoff",
-            "tts": "tts",
-        },
-    )
-
-    graph.add_edge("human_handoff", "tts")
-    graph.add_edge("clarify", "tts")
-    graph.add_edge("closing", "tts")
-    graph.add_edge("tts", END)
-
-    return graph.compile()
+def billing_node(state: GraphState) -> GraphState:
+    return _run_subagent(state, "billing", build_billing_tools, build_billing_rag_tool)
 
 
-# ---------------------------------------------------------------------------
-# Main loop -- one run = one continuous call, looping utterance by utterance
-# ---------------------------------------------------------------------------
+def plans_node(state: GraphState) -> GraphState:
+    return _run_subagent(state, "plans", build_plans_tools, build_product_rag_tool)
+
+
+def complaints_node(state: GraphState) -> GraphState:
+    return _run_subagent(state, "complaints", build_complaints_tools, build_support_rag_tool)
+
+
+def coverage_node(state: GraphState) -> GraphState:
+    return _run_subagent(state, "coverage", build_coverage_tools, build_technical_rag_tool)

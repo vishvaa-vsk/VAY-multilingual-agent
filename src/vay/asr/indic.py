@@ -40,9 +40,7 @@ class IndicConformerASR(BaseASR):
 
         # Skeleton transcript simulation
         simulated_text = (
-            "என் பில் தொகையை சரிபார்க்க வேண்டும்"
-            if language == "ta"
-            else "मेरा बिल विवरण देखना है"
+            "என் பில் தொகையை சரிபார்க்க வேண்டும்" if language == "ta" else "मेरा बिल विवरण देखना है"
         )
 
         return ASRResult(

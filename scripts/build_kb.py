@@ -82,15 +82,22 @@ def build(reset: bool = False) -> None:
     print("=" * 60)
     for collection_name, result in summary:
         count = chroma_setup.get_collection(collection_name).count()
-        print(f"  {collection_name:20} {result.get('num_chunks', 0):3} chunks ingested "
-              f"| {count:3} total in collection | lang={result.get('language', '?')}")
+        print(
+            f"  {collection_name:20} {result.get('num_chunks', 0):3} chunks ingested "
+            f"| {count:3} total in collection | lang={result.get('language', '?')}"
+        )
     print()
     print("Done. All 5 Nexatel RAG knowledge bases are ready in ChromaDB.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build/refresh the 5 Nexatel RAG knowledge-base collections.")
-    parser.add_argument("--reset", action="store_true",
-                        help="Wipe each collection before ingesting (clean rebuild).")
+    parser = argparse.ArgumentParser(
+        description="Build/refresh the 5 Nexatel RAG knowledge-base collections."
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Wipe each collection before ingesting (clean rebuild).",
+    )
     args = parser.parse_args()
     build(reset=args.reset)

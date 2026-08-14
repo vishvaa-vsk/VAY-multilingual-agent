@@ -30,10 +30,10 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # instead of hardcoding the string, so a rename only happens in one place.
 # ----------------------------------------------------------------------------
 KB_COLLECTIONS = {
-    "billing_policy": "billing_policy",     # Billing & Payments Agent
-    "product_catalog": "product_catalog",   # Plans & Offers Agent
-    "support_faq": "support_faq",           # Complaints & Service-Request Agent
-    "technical_kb": "technical_kb",         # Coverage & Technical Agent
+    "billing_policy": "billing_policy",  # Billing & Payments Agent
+    "product_catalog": "product_catalog",  # Plans & Offers Agent
+    "support_faq": "support_faq",  # Complaints & Service-Request Agent
+    "technical_kb": "technical_kb",  # Coverage & Technical Agent
     "compliance_policy": "compliance_policy",  # Guardrail layer (all agents)
 }
 
@@ -67,8 +67,9 @@ def get_embedding_function(model_name: str = EMBEDDING_MODEL):
     return _embedding_function
 
 
-def get_collection(collection_name: str = COLLECTION_NAME,
-                    persist_directory: str = PERSIST_DIRECTORY):
+def get_collection(
+    collection_name: str = COLLECTION_NAME, persist_directory: str = PERSIST_DIRECTORY
+):
     """Open (or create) a collection. Call this from any other file.
     Safe to call repeatedly with different collection_name values (e.g. to
     switch between the 5 scoped KB_COLLECTIONS) — each is cached separately."""
@@ -83,8 +84,9 @@ def get_collection(collection_name: str = COLLECTION_NAME,
     return _collections[key]
 
 
-def init_db(persist_directory: str = PERSIST_DIRECTORY,
-            collection_name: str = COLLECTION_NAME) -> "chromadb.Collection":
+def init_db(
+    persist_directory: str = PERSIST_DIRECTORY, collection_name: str = COLLECTION_NAME
+) -> "chromadb.Collection":
     """Initialize (or re-open) the DB and print a status summary."""
     collection = get_collection(collection_name, persist_directory)
     count = collection.count()
@@ -95,8 +97,9 @@ def init_db(persist_directory: str = PERSIST_DIRECTORY,
     return collection
 
 
-def reset_db(persist_directory: str = PERSIST_DIRECTORY,
-             collection_name: str = COLLECTION_NAME) -> "chromadb.Collection":
+def reset_db(
+    persist_directory: str = PERSIST_DIRECTORY, collection_name: str = COLLECTION_NAME
+) -> "chromadb.Collection":
     """DANGER: deletes every chunk in the collection. Use for a clean slate."""
     client = get_client(persist_directory)
     try:
@@ -114,7 +117,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.reset:
-        confirm = input(f"This deletes ALL data in collection '{COLLECTION_NAME}'. Type 'yes' to confirm: ")
+        confirm = input(
+            f"This deletes ALL data in collection '{COLLECTION_NAME}'. Type 'yes' to confirm: "
+        )
         if confirm.strip().lower() == "yes":
             reset_db()
             init_db()
