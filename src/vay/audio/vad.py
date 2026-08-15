@@ -104,46 +104,11 @@ class SileroVADStreamer:
                             self.current_utterance = []
                             self.silence_start_time = 0.0
                             
+                            # MUST reset model state after utterance, otherwise GRU memory gets stuck
+                            self.model.reset_states()
+                            
                             yield utterance_audio
                     else:
                         # Still speaking, reset silence timer
                         self.silence_start_time = 0.0
 
-if __name__ == "__main__":
-    import io
-    import os
-    import soundfile as sf
-    from dotenv import load_dotenv
-    from groq import Groq
-
-    # Load environment variables (GROQ_API_KEY)
-    load_dotenv()
-    
-    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-    # Test script to run the VAD streamer directly
-    streamer = SileroVADStreamer()
-    try:
-        for i, utterance in enumerate(streamer.stream()):
-            duration_sec = len(utterance) / streamer.sample_rate
-            print(f"--> Captured Utterance #{i+1}: {len(utterance)} samples ({duration_sec:.2f} seconds)")
-            print("--> Transcribing with Groq Whisper...")
-            
-            # Convert numpy array to WAV in memory
-            wav_io = io.BytesIO()
-            sf.write(wav_io, utterance, streamer.sample_rate, format='WAV', subtype='PCM_16')
-            wav_io.seek(0)
-            
-            # Call Groq API
-            transcription = client.audio.transcriptions.create(
-                file=("audio.wav", wav_io.read()),
-                model="whisper-large-v3-turbo",
-                response_format="verbose_json",
-            )
-            
-            detected_language = getattr(transcription, "language", "unknown")
-            print(f"--> Detected Language: {detected_language}")
-            print(f"--> Transcription: \"{transcription.text}\"")
-            print("--> Ready for next utterance...\n")
-    except KeyboardInterrupt:
-        print("\nStopping VAD stream.")

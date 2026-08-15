@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Models configuration
     indic_asr_model: str = "ai4bharat/indic-conformer-600m-multilingual"
-    whisper_asr_model: str = "openai/whisper-large-v3-turbo"
+    whisper_asr_model: str = "whisper-large-v3-turbo"
 
     # RAG settings
     retrieval_confidence_threshold: float = 0.80  # tau threshold (0.75 - 0.85)
@@ -30,8 +30,14 @@ class Settings(BaseSettings):
     sample_rate: int = 16000
     silence_duration_ms: int = 650
 
-    # Language tiers
-    tier1_languages: list[str] = ["ta", "hi"]  # Tamil, Hindi
+    # Language tiers (22 Indic languages + Urdu)
+    tier1_languages: list[str] = [
+        "as", "bn", "brx", "doi", "gu", "hi", "kn", "kok", "ks", "mai", 
+        "ml", "mni", "mr", "ne", "or", "pa", "sa", "sat", "sd", "ta", 
+        "te", "ur"
+    ]
+    language_confidence_threshold: float = 0.60
+    min_utterances_for_lock: int = 2
 
 
 settings = Settings()
