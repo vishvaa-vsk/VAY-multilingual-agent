@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import chroma_setup
 from langchain_core.tools import tool
 
 from vay.rag import manager as content_manager
+from vay.rag import vector_store as chroma_setup
 
 
 @dataclass
@@ -121,3 +121,55 @@ def compliance_policy_search(query: str, n_results: int = 3) -> str:
         query, n_results=n_results, collection_name=chroma_setup.KB_COLLECTIONS["compliance_policy"]
     )
     return _format_hits(results, tracker)
+
+
+from vay.types import Document, RetrievalResult
+
+
+class HybridRetriever:
+    """Hybrid Retriever combining BM25 keyword search and ChromaDB vector search.
+
+    The default collection is 'billing_policy' — callers that need a different
+    scoped collection should pass collection_name explicitly, or use the
+    build_*_rag_tool() factory functions above which already do this.
+    """
+
+    def __init__(
+        self,
+        collection_name: str = chroma_setup.KB_COLLECTIONS["billing_policy"],
+        confidence_threshold: float = 0.75,  # per project_context.md §8 (0.75-0.85 range)
+    ):
+        self.collection_name = collection_name
+        self.confidence_threshold = confidence_threshold
+        self.tracker = RetrievalTracker()
+
+    def retrieve(self, query: str, top_k: int = 5) -> RetrievalResult:
+        results = content_manager.read(query, n_results=top_k, collection_name=self.collection_name)
+        docs = results.get("documents", [[]])[0] if results.get("documents") else []
+        metas = results.get("metadatas", [[]])[0] if results.get("metadatas") else []
+        dists = results.get("distances", [[]])[0] if results.get("distances") else []
+
+        retrieved_docs: list[Document] = []
+        best_sim = 0.0
+
+        for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists)):
+            sim = 1.0 - dist
+            best_sim = max(best_sim, sim)
+            self.tracker.record(sim)
+            retrieved_docs.append(
+                Document(
+                    id=meta.get("content_hash", f"doc_{i}"),
+                    content=doc,
+                    metadata=meta,
+                    score=sim,
+                )
+            )
+
+        return RetrievalResult(
+            query=query,
+            documents=retrieved_docs,
+            confidence_score=best_sim,
+            is_high_confidence=(best_sim >= self.confidence_threshold),
+        )
+
+

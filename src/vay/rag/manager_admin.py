@@ -31,13 +31,10 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
-from vay.rag.manager_read import _DEFAULT_COLLECTION, delete, get_collection
+from vay.rag.manager_create import create
+from vay.rag.vector_store import COLLECTION_NAME as _DEFAULT_COLLECTION
+from vay.rag.vector_store import get_collection
+
 
 
 def list_sources(collection_name: str = _DEFAULT_COLLECTION) -> list[dict]:

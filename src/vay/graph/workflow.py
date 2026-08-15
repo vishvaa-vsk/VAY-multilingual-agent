@@ -118,6 +118,7 @@ from vay.graph.nodes.utils import (
     route_after_guardrail,
     route_after_orchestrator,
     tts_node,
+    warning_node,
 )
 from vay.graph.state import GraphState
 
@@ -132,6 +133,7 @@ def build_graph():
     graph.add_node("coverage", coverage_node)
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("human_handoff", human_handoff_node)
+    graph.add_node("warning", warning_node)  # aggressive caller 1st offence
     graph.add_node("clarify", clarify_node)
     graph.add_node("closing", closing_node)
     graph.add_node("tts", tts_node)
@@ -146,6 +148,7 @@ def build_graph():
             "complaints": "complaints",
             "coverage": "coverage",
             "human_handoff": "human_handoff",
+            "warning": "warning",
             "clarify": "clarify",
             "closing": "closing",
         },
@@ -164,11 +167,16 @@ def build_graph():
     )
 
     graph.add_edge("human_handoff", "tts")
+    graph.add_edge("warning", "tts")  # warning message goes to TTS then END
     graph.add_edge("clarify", "tts")
     graph.add_edge("closing", "tts")
     graph.add_edge("tts", END)
 
     return graph.compile()
+
+
+build_voice_assistant_graph = build_graph
+
 
 
 # ---------------------------------------------------------------------------

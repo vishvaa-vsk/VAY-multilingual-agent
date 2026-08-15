@@ -31,12 +31,39 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
+import re
+import sys as _sys_utf8
+
+try:
+    import nltk
+except ImportError:
+    nltk = None
+
+try:
+    from langdetect import LangDetectException, detect as _langdetect
+except ImportError:
+    _langdetect = None
+    LangDetectException = Exception
+
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 150
+
+
+def _tokenize_sentences(text: str) -> list[str]:
+    if nltk:
+        try:
+            return nltk.sent_tokenize(text)
+        except Exception:
+            pass
+    # Fallback sentence tokenizer using regex
+    sents = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [s for s in sents if s]
+
+
+def _extract_heading(block: str) -> str:
+    m = re.match(r"^#{1,6}\s+(.+)$", block.strip(), re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
 
 
 def chunk_markdown(
@@ -44,6 +71,7 @@ def chunk_markdown(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[tuple[str, str]]:
+
     """
     Structure-aware, sentence-boundary chunking.
 
@@ -69,10 +97,8 @@ def chunk_markdown(
         if h:
             current_heading = h
 
-        try:
-            sents = nltk.sent_tokenize(block)
-        except Exception:
-            sents = [block]
+        sents = _tokenize_sentences(block)
+
 
         for s in sents:
             s = s.strip()
@@ -138,7 +164,8 @@ def chunk_markdown(
         curr_text, curr_hdg = chunks[i]
 
         # Take sentences from the END of the previous chunk until we hit overlap budget
-        prev_sents = nltk.sent_tokenize(prev_text)
+        prev_sents = _tokenize_sentences(prev_text)
+
         tail_sents: list[str] = []
         tail_len = 0
         for s in reversed(prev_sents):
@@ -168,10 +195,13 @@ def detect_language(text: str) -> str:
     Returns an ISO 639-1 code (e.g. 'en', 'ta', 'hi') or 'unknown'.
     Uses the first ~500 chars for speed — enough for reliable detection.
     """
+    if not _langdetect:
+        return "en"
     try:
         return _langdetect(text[:500])
-    except (LangDetectException, Exception):
+    except Exception:
         return "unknown"
+
 
 
 # ============================================================================

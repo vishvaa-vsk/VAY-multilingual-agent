@@ -36,7 +36,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-import customer_db
+import vay.tools.db_queries as customer_db
+
 from langchain_core.tools import tool
 
 from vay.tools.session import (

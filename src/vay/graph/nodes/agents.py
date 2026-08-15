@@ -42,18 +42,17 @@ from dotenv import load_dotenv
 
 load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
-from rag_tools import (
+from vay.rag.retriever import (
     build_billing_rag_tool,
     build_product_rag_tool,
     build_support_rag_tool,
     build_technical_rag_tool,
 )
-from tools import (
-    build_billing_tools,
-    build_complaints_tools,
-    build_coverage_tools,
-    build_plans_tools,
-)
+from vay.tools.billing import build_billing_tools
+from vay.tools.complaints import build_complaints_tools
+from vay.tools.coverage import build_coverage_tools
+from vay.tools.plans import build_plans_tools
+
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
 # routing back to the right sub-agent for a bare "yes"/"no" confirmation turn, since the

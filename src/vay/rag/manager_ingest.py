@@ -31,13 +31,20 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Dynamic import for 'chroma_setup (1).py' — the (1) suffix prevents normal
-# `import chroma_setup` from working, so we load it explicitly by file path
-# and register it under the canonical name so downstream `from chroma_setup
-# import …` statements work without modification.
-# ---------------------------------------------------------------------------
-from vay.rag.manager_create import get_collection
+import hashlib
+from datetime import UTC, datetime
+
+from vay.rag.categorizer import categorize_chunks
+from vay.rag.chunking import chunk_markdown, detect_language
+from vay.rag.tfidf import compute_tfidf_descriptions
+from vay.rag.vector_store import get_collection
+
+
+def _chunk_id(chunk_text: str) -> str:
+    """SHA-256 of the chunk content."""
+    return hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+
+
 
 
 def _ingest_markdown(

@@ -57,14 +57,18 @@ def get_client(persist_directory: str = PERSIST_DIRECTORY):
 
 
 def get_embedding_function(model_name: str = EMBEDDING_MODEL):
-    """SentenceTransformer embedding function ChromaDB calls automatically
-    on every add/upsert/query. Cached so the model is only loaded once."""
+    """SentenceTransformer / ONNX embedding function ChromaDB calls automatically.
+    Cached so the model is only loaded once."""
     global _embedding_function
     if _embedding_function is None:
-        _embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=model_name
-        )
+        try:
+            _embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=model_name
+            )
+        except Exception:
+            _embedding_function = embedding_functions.DefaultEmbeddingFunction()
     return _embedding_function
+
 
 
 def get_collection(
@@ -111,6 +115,25 @@ def reset_db(
     return get_collection(collection_name, persist_directory)
 
 
+class VectorStoreManager:
+    def __init__(self, persist_directory: str = PERSIST_DIRECTORY, collection_name: str = COLLECTION_NAME):
+        self.persist_directory = persist_directory
+        self.collection_name = collection_name
+
+    def get_collection(self, collection_name: str | None = None):
+        name = collection_name or self.collection_name
+        return get_collection(name, self.persist_directory)
+
+    def init_db(self, collection_name: str | None = None):
+        name = collection_name or self.collection_name
+        return init_db(self.persist_directory, name)
+
+    def reset_db(self, collection_name: str | None = None):
+        name = collection_name or self.collection_name
+        return reset_db(self.persist_directory, name)
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ChromaDB setup / status check")
     parser.add_argument("--reset", action="store_true", help="Wipe the collection and start fresh")
@@ -127,3 +150,15 @@ if __name__ == "__main__":
             print("Cancelled.")
     else:
         init_db()
+        print("\nScoped Agent Knowledge Base Collections:")
+        total_chunks = 0
+        for name in KB_COLLECTIONS.values():
+            try:
+                coll = get_collection(name)
+                c_count = coll.count()
+                total_chunks += c_count
+                print(f"  - {name:20}: {c_count} chunks")
+            except Exception:
+                print(f"  - {name:20}: 0 chunks")
+        print(f"Total Chunks Across All Collections: {total_chunks}")
+
