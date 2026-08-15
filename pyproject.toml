@@ -30,6 +30,10 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.28.0",
     "gradio>=4.25.0",
+    "sounddevice>=0.5.5",
+    "numpy>=2.2.6",
+    "groq>=1.6.0",
+    "python-dotenv>=1.2.2",
 ]
 
 [dependency-groups]
