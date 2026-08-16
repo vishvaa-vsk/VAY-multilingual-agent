@@ -23,7 +23,7 @@ import os
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 
-load_dotenv()
+load_dotenv(override=True)
 
 from vay.tts import engine as tts
 

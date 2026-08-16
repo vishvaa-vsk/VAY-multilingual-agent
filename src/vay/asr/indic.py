@@ -25,7 +25,7 @@ class IndicConformerASR(BaseASR):
             from transformers import AutoModel
             
             # Ensure environment variables are loaded
-            load_dotenv()
+            load_dotenv(override=True)
             hf_token = os.environ.get("HF_TOKEN")
             
             self.model = AutoModel.from_pretrained(

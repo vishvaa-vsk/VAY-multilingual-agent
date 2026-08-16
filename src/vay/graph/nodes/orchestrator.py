@@ -27,7 +27,7 @@ import os
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-load_dotenv()
+load_dotenv(override=True)
 
 from vay.rag.retriever import RetrievalTracker
 from vay.tools.session import SessionContext, confirm_pending_action

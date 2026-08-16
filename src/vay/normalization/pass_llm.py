@@ -22,7 +22,7 @@ import re
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from vay.types import StructuredTranscript
 

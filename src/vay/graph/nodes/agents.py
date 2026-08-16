@@ -40,7 +40,7 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
+load_dotenv(override=True)  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
 from vay.rag.retriever import (
     build_billing_rag_tool,

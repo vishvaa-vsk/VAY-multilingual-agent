@@ -104,7 +104,7 @@ class WhisperASR(BaseASR):
 
     def __init__(self, model_id: str = "whisper-large-v3-turbo") -> None:
         self.model_id = model_id
-        load_dotenv()
+        load_dotenv(override=True)
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
     # ------------------------------------------------------------------

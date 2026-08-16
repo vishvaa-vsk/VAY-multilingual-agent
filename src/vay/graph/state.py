@@ -41,7 +41,7 @@ from typing import Any, TypedDict
 
 from dotenv import load_dotenv
 
-load_dotenv()  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
+load_dotenv(override=True)  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
 
 # Which sub-agent route owns each tool that can create a pending_action -- used to force
