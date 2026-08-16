@@ -7,7 +7,7 @@
   <title>Strands Visualizer & Mic</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Electrolize&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-dark: rgba(10, 10, 12, 0.95);
@@ -25,6 +25,7 @@
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      font-family: 'Electrolize', sans-serif !important;
     }
 
     body,
@@ -32,8 +33,9 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: transparent;
-      font-family: 'Outfit', sans-serif;
+      background: transparent !important;
+      background-color: transparent !important;
+      font-family: 'Electrolize', sans-serif !important;
       color: var(--text-main);
     }
 
@@ -44,13 +46,16 @@
       width: 100%;
       height: 100%;
       z-index: 1;
-      background: transparent;
+      background: transparent !important;
+      background-color: transparent !important;
     }
 
     .strands-container canvas {
       display: block;
       width: 100%;
       height: 100%;
+      background: transparent !important;
+      background-color: transparent !important;
     }
 
     .ui-overlay {
@@ -77,16 +82,16 @@
     }
 
     .header-bar h1 {
-      font-size: 20px;
-      font-weight: 700;
+      font-size: 60px;
+      font-weight: 9000;
       letter-spacing: 1px;
       text-transform: uppercase;
       background: linear-gradient(135deg, #f97316, #7c3aed, #06b6d4);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      -webkit-text-stroke: 0.5px #000000;
-      filter: drop-shadow(0 0 1px #000000) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
-      margin-bottom: 4px;
+      -webkit-text-stroke: 0.1px #2d2d2d;
+      filter: drop-shadow(0 0 1px #b440f8) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.4));
+      margin-bottom: 2px;
     }
 
     .header-bar p {
@@ -509,7 +514,6 @@
       stroke: #ffffff;
       transform: rotate(90deg);
     }
-
   </style>
 </head>
 
@@ -519,7 +523,7 @@
 
   <div class="ui-overlay">
     <div class="header-bar">
-      <h1>VAY Assistant</h1>
+      <h1>VAY</h1>
       <p id="sub-status">Speech Interface Active</p>
     </div>
 
@@ -541,10 +545,12 @@
         </button>
       </div>
       <div class="end-button-container">
-        <button class="specular-button end-button" id="end-btn" title="End Session" style="--sb-radius: 40px; --sb-tint: #ef4444; --sb-tint-opacity: 0.16; --sb-blur: 16px; --sb-text-color: #ef4444;">
+        <button class="specular-button end-button" id="end-btn" title="End Session"
+          style="--sb-radius: 40px; --sb-tint: #ef4444; --sb-tint-opacity: 0.16; --sb-blur: 16px; --sb-text-color: #ef4444;">
           <span id="end-btn-fx" class="specular-button__fx" aria-hidden="true"></span>
           <span class="specular-button__label">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#ef4444" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#ef4444" stroke-width="2.4"
+              stroke-linecap="round" stroke-linejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
@@ -853,6 +859,27 @@
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.canvas.style.backgroundColor = 'transparent';
+    gl.canvas.style.background = 'transparent';
+
+    function ensureTransparency() {
+      try {
+        if (window.parent && window.parent.document) {
+          const iframes = window.parent.document.querySelectorAll('iframe');
+          for (const ifr of iframes) {
+            if (ifr.contentWindow === window) {
+              ifr.style.background = 'transparent';
+              ifr.style.backgroundColor = 'transparent';
+              ifr.setAttribute('allowtransparency', 'true');
+              if (ifr.parentElement) {
+                ifr.parentElement.style.background = 'transparent';
+                ifr.parentElement.style.backgroundColor = 'transparent';
+              }
+            }
+          }
+        }
+      } catch (e) { }
+    }
+    ensureTransparency();
 
     const geometry = new Triangle(gl);
     if (geometry.attributes.uv) {
@@ -925,7 +952,7 @@
 
       // Interpolate audio reactivity smoothly — low factor = very steady, no jolting
       currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.04;
-      currentAmpMod   += (targetAmpMod   - currentAmpMod)   * 0.04;
+      currentAmpMod += (targetAmpMod - currentAmpMod) * 0.04;
 
       program.uniforms.uTime.value = t * 0.001;
       program.uniforms.uColors.value = buildPalette(config.colors);
@@ -972,10 +999,10 @@
         const avg = sum / dataArray.length;
 
         // Very subtle reactivity — strands breathe gently, never jolt
-        targetAmpMod   = Math.min((avg / 255) * 0.3, 0.25);  // max +0.25 amplitude
+        targetAmpMod = Math.min((avg / 255) * 0.3, 0.25);  // max +0.25 amplitude
         targetSpeedMod = Math.min((avg / 255) * 0.15, 0.12); // max +0.12 speed
       } else {
-        targetAmpMod   = 0;
+        targetAmpMod = 0;
         targetSpeedMod = 0;
       }
     };

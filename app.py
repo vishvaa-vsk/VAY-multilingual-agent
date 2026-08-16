@@ -21,6 +21,7 @@ from component_strands import strands_component
 from component_galaxy import galaxy_component
 from component_aurora import aurora_component
 from component_specular_button import specular_button
+from component_splash_cursor import splash_cursor_component
 
 # Ensure page config is set first
 st.set_page_config(
@@ -40,6 +41,14 @@ except ImportError:
 # Inject custom global CSS for premium UI styling
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Electrolize&display=swap');
+
+    /* Global Electrolize Typography */
+    html, body, [class*="css"], .stApp, *,
+    h1, h2, h3, h4, h5, h6, p, span, div, input, select, textarea, button, label {
+        font-family: 'Electrolize', sans-serif !important;
+    }
+
     /* Hide Streamlit top header bar, decoration line, and toolbar */
     header[data-testid="stHeader"] {
         display: none !important;
@@ -70,10 +79,19 @@ st.markdown("""
         visibility: hidden !important;
     }
 
+    /* All custom components and iframes transparent */
+    iframe,
+    div[data-testid="stCustomComponentV1"],
+    div[data-testid="element-container"]:has(iframe) {
+        background: transparent !important;
+        background-color: transparent !important;
+    }
+
     /* Dark Theme Core Styles */
     .stApp {
         background: radial-gradient(circle at center, #111115 0%, #070708 100%);
         color: #f3f4f6;
+        font-family: 'Electrolize', sans-serif !important;
     }
     
     /* Custom Sidebar styling */
@@ -635,6 +653,19 @@ def escalate_session(reason):
     st.session_state.current_pipeline_data["action"] = f"Escalated ({reason})"
     st.rerun()
 
+# ----------------- GLOBAL INTERACTIVE FLUID SPLASH CURSOR -----------------
+# Render interactive React Bits SplashCursor component
+splash_cursor_component(
+    density_dissipation=5.0,
+    velocity_dissipation=8.5,
+    pressure=0.05,
+    splat_radius=0.05,
+    shading=False,
+    rainbow_mode=True,
+    color="#7c1ed6",
+    key="global_splash_cursor"
+)
+
 # ----------------- MAIN LAYOUT ROUTING -----------------
 if not st.session_state.session_started:
     # Render pure white Galaxy WebGL background from React Bits
@@ -665,7 +696,7 @@ if not st.session_state.session_started:
     with login_col:
         img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 200px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
         st.markdown(f"""
-        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 20px 50px rgba(0, 0, 0, 0);">
+        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 0px rgba(0, 0, 0, 0);">
             {img_html}
             <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px; padding-left: 15px;">VAY</h1>
             <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: 8px; margin-bottom: 0; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
@@ -752,9 +783,9 @@ else:
     # Render Aurora WebGL background with authentic Northern Lights colors
     aurora_component(
         colorStops=["#00FF87", "#60EFFF", "#7C3AED"],
-        amplitude=1.0,
-        blend=0.55,
-        speed=0.45,
+        amplitude=0.25,
+        blend=0.75,
+        speed=0.25,
         key="aurora_session_bg"
     )
 
