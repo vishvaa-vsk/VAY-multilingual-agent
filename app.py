@@ -17,12 +17,12 @@ import time
 import json
 import os
 os.environ["STREAMLIT_UI"] = "1"
-from audio_handler import decode_audio, encode_audio_bytes
-from component_strands import strands_component
-from component_galaxy import galaxy_component
-from component_aurora import aurora_component
-from component_specular_button import specular_button
-from component_splash_cursor import splash_cursor_component
+from vay.audio.audio_handler import decode_audio, encode_audio_bytes
+from vay.ui.component_strands import strands_component
+from vay.ui.component_galaxy import galaxy_component
+from vay.ui.component_aurora import aurora_component
+from vay.ui.component_specular_button import specular_button
+from vay.ui.component_splash_cursor import splash_cursor_component
 
 import io
 import soundfile as sf
