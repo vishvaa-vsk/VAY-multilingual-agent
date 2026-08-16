@@ -179,7 +179,7 @@ st.markdown("""
         margin-bottom: 6px !important;
     }
 
-    /* 2. Full Transparency on ALL nested elements of Selectbox and TextInput */
+    /* 2. Full 100% Transparency on ALL elements of Selectbox and TextInput */
     div[data-testid="stSelectbox"],
     div[data-testid="stSelectbox"] *,
     div[data-testid="stSelectbox"] div,
@@ -191,21 +191,25 @@ st.markdown("""
     div[data-testid="stTextInput"] *,
     div[data-testid="stTextInput"] > div,
     div[data-testid="stTextInput"] > div > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"],
     div[data-testid="stTextInput"] input {
         background: transparent !important;
         background-color: transparent !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
     }
 
-    /* 3. Unified Transparent Cosmic Glass Box for BOTH Dropdown and Input */
+    /* 3. Galaxy Themed Border on Country Code and Phone Number Boxes */
     div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
     div[data-testid="stTextInput"] input {
         background: transparent !important;
         background-color: transparent !important;
-        border: 1.5px solid rgba(6, 182, 212, 0.5) !important;
+        border: 1.5px solid rgba(192, 132, 252, 0.65) !important;
         border-radius: 12px !important;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 15px rgba(6, 182, 212, 0.15) !important;
-        backdrop-filter: blur(16px) !important;
-        -webkit-backdrop-filter: blur(16px) !important;
+        box-shadow: 0 0 16px rgba(192, 132, 252, 0.3), 0 0 24px rgba(56, 189, 248, 0.2) !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
         transition: all 0.3s ease !important;
         min-height: 48px !important;
         height: 48px !important;
@@ -213,6 +217,16 @@ st.markdown("""
         font-size: 15px !important;
         font-weight: 600 !important;
         letter-spacing: 0.8px !important;
+    }
+
+    /* Clear intermediate wrappers for TextInput */
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"] {
+        border: none !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
     }
 
     div[data-testid="stTextInput"] input {
@@ -227,15 +241,15 @@ st.markdown("""
         align-items: center !important;
     }
 
-    /* Unified Hover and Focus States */
+    /* Unified Hover and Focus States with Galaxy Neon Glow */
     div[data-testid="stSelectbox"] div[data-baseweb="select"]:hover > div,
     div[data-testid="stSelectbox"] div[data-baseweb="select"]:focus-within > div,
     div[data-testid="stTextInput"] input:hover,
     div[data-testid="stTextInput"] input:focus {
-        background: rgba(255, 255, 255, 0.04) !important;
-        background-color: rgba(255, 255, 255, 0.04) !important;
-        border-color: #60EFFF !important;
-        box-shadow: 0 0 24px rgba(96, 239, 255, 0.45), inset 0 0 10px rgba(6, 182, 212, 0.25) !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 22px rgba(192, 132, 252, 0.65), 0 0 35px rgba(56, 189, 248, 0.5) !important;
     }
 
     /* Selected Value Text in Country Code Dropdown & Typed Number (High Contrast Pure White) */
@@ -286,13 +300,31 @@ st.markdown("""
         stroke: #ffffff !important;
     }
 
-    /* High Contrast Placeholder text */
-    div[data-testid="stTextInput"] input::placeholder {
-        color: rgba(203, 213, 225, 0.6) !important;
-        -webkit-text-fill-color: rgba(203, 213, 225, 0.6) !important;
-        font-weight: 400 !important;
+    /* High Contrast Placeholder text (Pure White) */
+    div[data-testid"stTextInput"] input::placeholder,
+    div[data-testid="stTextInput"] input::-webkit-input-placeholder,
+    div[data-testid="stTextInput"] input::-moz-placeholder {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
         letter-spacing: 0.4px !important;
         text-shadow: none !important;
+    }
+
+    /* "Press Enter to apply" instructions & helper text (Pure White) */
+    div[data-testid="InputInstructions"],
+    div[data-testid="InputInstructions"] *,
+    div[data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"],
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] *,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] small,
+    div[data-testid="stTextInput"] span {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
     }
 
     /* Dropdown Popover Menu (All Options Pure White) */
@@ -653,23 +685,23 @@ if not st.session_state.session_started:
             # Render SpecularButton component from React Bits
             start_btn_event = specular_button(
                 label="Start Session",
-                size="lg",
+                size="md",
                 radius=60,
                 tint="#7c3aed",
-                tintOpacity=0.18,
-                blur=12,
+                tintOpacity=0.0,
+                blur=0,
                 textColor="#ffffff",
                 lineColor="#60EFFF",
                 baseColor="#7c3aed",
-                intensity=3,
+                intensity=3.5,
                 shineSize=35,
                 shineFade=48,
-                thickness=1.2,
+                thickness=1.4,
                 speed=0.35,
                 followMouse=True,
                 proximity=250,
                 autoAnimate=False,
-                fullWidth=True,
+                fullWidth=False,
                 key=f"start_session_btn_{st.session_state.component_key}"
             )
 
