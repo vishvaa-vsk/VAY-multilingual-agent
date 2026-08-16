@@ -53,13 +53,15 @@ def build_plans_tools(session: SessionContext) -> list:
     conn = customer_db._connect()
 
     @tool
-    def listPlans(plan_type: str = "") -> str:
-        """List Nexatel plans, optionally filtered by plan_type
-        ('prepaid', 'postpaid', or 'broadband')."""
-        if plan_type:
-            rows = conn.execute("SELECT * FROM plans WHERE plan_type=?", (plan_type,)).fetchall()
+    def listPlans(plan_type: str | None = None) -> str:
+        """List Nexatel plans, optionally filtered by plan_type ('prepaid', 'postpaid', or 'broadband')."""
+        if plan_type and plan_type.strip():
+            rows = conn.execute(
+                "SELECT * FROM plans WHERE plan_type=?", (plan_type.strip().lower(),)
+            ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM plans").fetchall()
+
         return (
             "\n".join(
                 f"{r['plan_id']}: {r['plan_name']} — Rs {r['price']}/{r['validity_days']}d, "

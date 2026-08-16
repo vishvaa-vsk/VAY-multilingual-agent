@@ -1,20 +1,56 @@
-"""Audio STT pipeline manager (Producer-Consumer architecture)."""
+"""Audio STT pipeline manager (Producer-Consumer architecture).
+
+The pipeline captures microphone audio via Silero VAD, detects the utterance
+boundary, then routes the complete utterance to the correct ASR model
+(IndicConformer for Indic languages, Whisper for everything else).
+
+Usage — standalone demo (prints results):
+    python -m vay.audio.pipeline
+
+Usage — with a downstream callback (wires into LangGraph):
+    def on_result(result: ASRResult) -> None:
+        ...  # feed into graph.invoke(...)
+
+    pipeline = STTPipeline(callback=on_result)
+    pipeline.start()          # blocks until KeyboardInterrupt
+"""
+
+from __future__ import annotations
 
 import queue
 import threading
 import time
+from typing import Callable
 
 import torch
 
 from vay.asr.router import ASRRouter
 from vay.audio.vad import SileroVADStreamer
 from vay.config import settings
+from vay.types import ASRResult
+
+# Minimum number of audio samples an utterance must contain before it is sent
+# to the ASR model.  Short captures (~<0.5 s at 16 kHz = 8 000 samples) are
+# almost always noise bursts, mic clicks, or the tail-end of TTS playback
+# bleeding into the microphone — Whisper reliably hallucinates "." or a random
+# word on them.  The value here is conservative; increase if false positives
+# persist.
+_MIN_UTTERANCE_SAMPLES: int = 8_000   # ~0.5 s at 16 kHz
 
 
 class STTPipeline:
-    """Manages the lifecycle of real-time audio chunking, language ID, and STT routing."""
+    """Manages the lifecycle of real-time audio chunking, language ID, and STT routing.
 
-    def __init__(self) -> None:
+    Args:
+        callback: Optional callable that receives each :class:`ASRResult` after
+            transcription.  If *None*, results are printed to stdout.  The
+            callback is invoked on the consumer background thread — keep it
+            thread-safe (LangGraph's ``graph.invoke`` is safe to call from a
+            background thread as long as no shared mutable state is accessed
+            concurrently outside the graph).
+    """
+
+    def __init__(self, callback: Callable[[ASRResult], None] | None = None) -> None:
         self.vad_streamer = SileroVADStreamer(
             sample_rate=settings.sample_rate,
             min_silence_duration_ms=settings.silence_duration_ms,
@@ -24,56 +60,129 @@ class STTPipeline:
         self.is_running = False
         self._consumer_thread: threading.Thread | None = None
 
+        # Downstream callback — set to None to use the default stdout printer
+        self.callback: Callable[[ASRResult], None] | None = callback
+
+        # Mute flag — when set the VAD producer discards utterances instead of
+        # queuing them.  Use mute()/unmute() to pause listening during TTS
+        # playback so the speaker output is never fed back as a user utterance.
+        self._muted = threading.Event()
+
+        # Last utterance audio tensor — cached so the callback (run_voice.py) can
+        # re-invoke the router with a different language override without re-reading
+        # the microphone.  Set to None until the first utterance is processed.
+        self.last_audio_tensor: torch.Tensor | None = None
+
+    # ------------------------------------------------------------------
+    # Mute / unmute (TTS playback guard)
+    # ------------------------------------------------------------------
+
+    def mute(self) -> None:
+        """Stop accepting new utterances (call before TTS playback starts).
+
+        Any utterance that has *already* been queued before mute() is called
+        will still be processed by the consumer; the mute only blocks new ones
+        from entering the queue.
+        """
+        self._muted.set()
+        print("[Pipeline] Microphone muted (TTS playing).")
+
+    def unmute(self) -> None:
+        """Resume accepting utterances (call after TTS playback ends).
+
+        Drains the utterance queue of any captures that slipped in during
+        the muted window (e.g. TTS audio echo, room noise after the speaker
+        stopped) before re-enabling the consumer.
+        """
+        # Drain residual captures accumulated while muted
+        drained = 0
+        while True:
+            try:
+                self.utterance_queue.get_nowait()
+                self.utterance_queue.task_done()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained:
+            print(f"[Pipeline] Drained {drained} residual utterance(s) after TTS.")
+        self._muted.clear()
+        print("[Pipeline] Microphone unmuted (listening).")
+
+    # ------------------------------------------------------------------
+    # Consumer (background thread)
+    # ------------------------------------------------------------------
+
     def _consumer_loop(self) -> None:
-        """Background thread consuming utterances from VAD and routing to ASR."""
+        """Background thread: consume utterances from the VAD queue and route to ASR."""
         while self.is_running:
             try:
-                # Wait for utterance with a timeout to allow graceful shutdown
                 utterance = self.utterance_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
 
-            # We got an utterance. Send it to the router!
             try:
-                # Convert to torch tensor
-                tensor_chunk = torch.from_numpy(utterance)
-                
-                print(f"[Pipeline] Processing utterance of {len(utterance)} samples...")
-                
-                # Execute STT route
+                # ----------------------------------------------------------
+                # Minimum-length guard
+                # Short audio bursts (<~0.5 s) are almost always noise or
+                # TTS echo that slipped through before the mute was applied.
+                # Whisper hallucinates "." or random words on them — skip.
+                # ----------------------------------------------------------
+                if len(utterance) < _MIN_UTTERANCE_SAMPLES:
+                    print(
+                        f"[Pipeline] Utterance too short "
+                        f"({len(utterance)} samples < {_MIN_UTTERANCE_SAMPLES}) — skipping."
+                    )
+                    continue
+
+                audio_tensor = torch.from_numpy(utterance)
+                # Cache for potential IndicConformer retry in run_voice.py
+                self.last_audio_tensor = audio_tensor
+                print(f"\n[Pipeline] Processing utterance of {len(utterance)} samples...")
+
                 start_time = time.time()
-                result = self.router.route_and_transcribe(tensor_chunk)
+                result = self.router.route_and_transcribe(audio_tensor)
                 duration = time.time() - start_time
-                
-                print(f"\n[STT Result - {duration:.2f}s]")
-                print(f"Language: {result.detected_language}")
-                print(f"Model: {result.model_used}")
-                print(f"Text: \"{result.raw_text}\"\n")
-                
+
+                print(f"[STT Result - {duration:.2f}s]")
+                print(f"  Language : {result.detected_language}")
+                print(f"  Model    : {result.model_used}")
+                print(f'  Text     : "{result.raw_text}"')
+
+                # Dispatch to downstream consumer (LangGraph or stdout)
+                if self.callback is not None:
+                    self.callback(result)
+
             except Exception as e:
                 print(f"[Pipeline] Error transcribing utterance: {e}")
             finally:
                 self.utterance_queue.task_done()
 
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def start(self) -> None:
-        """Start the STT pipeline."""
+        """Start the STT pipeline.  Blocks on the calling thread (VAD producer loop)."""
         self.is_running = True
-        
-        # Start Consumer Thread
-        self._consumer_thread = threading.Thread(target=self._consumer_loop, daemon=True)
+
+        self._consumer_thread = threading.Thread(
+            target=self._consumer_loop, daemon=True, name="stt-consumer"
+        )
         self._consumer_thread.start()
-        
-        # Run Producer Loop (blocking on main thread)
+
         print("[Pipeline] Starting VAD Producer on main thread...")
         try:
             for utterance in self.vad_streamer.stream():
-                # Push utterance to queue without blocking
+                # Discard utterances while muted (TTS is playing)
+                if self._muted.is_set():
+                    continue
                 self.utterance_queue.put(utterance)
         except KeyboardInterrupt:
             self.stop()
 
     def stop(self) -> None:
-        """Stop the STT pipeline."""
+        """Stop the STT pipeline and wait for the consumer thread to exit."""
         print("\n[Pipeline] Stopping STT Pipeline...")
         self.is_running = False
         if self._consumer_thread:
@@ -81,6 +190,10 @@ class STTPipeline:
         self.router.reset_session()
 
 
+# ---------------------------------------------------------------------------
+# Standalone demo — run with: python -m vay.audio.pipeline
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    pipeline = STTPipeline()
+    pipeline = STTPipeline()   # no callback → results printed to stdout
     pipeline.start()

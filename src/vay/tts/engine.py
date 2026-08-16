@@ -106,6 +106,20 @@ def speak(
     if not text:
         return output_path or ""
 
+    # Script-aware safeguard: If the LLM returned Tamil/Hindi/Indic Unicode text,
+    # ensure we pick the correct native neural voice rather than an English voice
+    # which would otherwise pronounce the Unicode characters as numbers/gibberish.
+    if re.search(r"[\u0b80-\u0bff]", text):
+        effective_lang = "ta"
+    elif re.search(r"[\u0900-\u097f]", text):
+        effective_lang = "hi"
+    elif re.search(r"[\u0c00-\u0c7f]", text):
+        effective_lang = "te"
+    elif re.search(r"[\u0c80-\u0cff]", text):
+        effective_lang = "kn"
+    elif re.search(r"[\u0d00-\u0d7f]", text):
+        effective_lang = "ml"
+
     print(f"\n[TTS Audio Output ({effective_lang})]: {text}\n")
 
     if edge_tts is None:

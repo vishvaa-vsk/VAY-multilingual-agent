@@ -53,6 +53,12 @@ class SessionContext:
     phone_number: str
     verified: bool = False
     language: str = "en"
+    # Customer's registered language from the DB (the `lang` column set at account creation).
+    # Loaded once at call startup via load_customer_preferred_language() below.
+    # Used by ASRRouter as a soft hint when Whisper's auto-detection confidence is too low
+    # to trust (e.g. Tamil speech mis-detected as Indonesian at 0.43 confidence) — see
+    # run_voice.py's on_asr_result for how this feeds into override_language.
+    preferred_language: str = "en"
     escalation_requested: bool = False  # set True by escalateToHuman()
     escalation_reason: str = ""
     pending_action: dict | None = (
@@ -75,6 +81,31 @@ class SessionContext:
     # aggressive_count/previous_route were (incorrectly) read from state instead of session.
     last_route: str = ""
 
+
+def load_customer_preferred_language(phone_number: str) -> str:
+    """Look up the customer's registered language preference from the DB.
+
+    Returns the ISO 639-1 language code stored in the ``lang`` column of the
+    customers table (e.g. ``"ta"`` for Tamil, ``"hi"`` for Hindi), or ``"en"``
+    if the customer is not found or the lookup fails.
+
+    This is called ONCE at call startup (``run_voice.py``) and stored on
+    ``SessionContext.preferred_language``.  The ASR router uses it as a
+    fallback hint when Whisper auto-detects a Tier-2 language with low
+    confidence (< 0.5), which is a common failure mode for Indian languages
+    in short/noisy utterances (e.g. Tamil speech mistakenly classified as
+    Indonesian at confidence 0.43).
+    """
+    try:
+        conn = customer_db._connect()
+        row = conn.execute(
+            "SELECT language_pref FROM customers WHERE phone_number=?", (phone_number,)
+        ).fetchone()
+        if row and row["language_pref"]:
+            return row["language_pref"]
+    except Exception:
+        pass
+    return "en"
 
 SENSITIVE_DENIAL = (
     "This action requires identity verification that hasn't been completed in this "
