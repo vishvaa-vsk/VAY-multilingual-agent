@@ -220,6 +220,8 @@ CUSTOMERS = [
     ("9876500008", "Sanjay Gupta", "1980-12-25", 0, "Delhi", "110002", "postpaid", "hi"),
     ("9876500009", "Meena Pillai", "1993-06-30", 1, "Chennai", "600001", "broadband", "en"),
     ("9876500010", "Rahul Verma", "1997-08-08", 1, "Pune", "411001", "prepaid", "hi"),
+    # Demo / development test account — used with --phone 9876543210 in run_voice.py
+    ("9876543210", "Vishwa Raj", "1995-06-15", 1, "Chennai", "600001", "prepaid", "ta"),
 ]
 
 # phone -> (plan_id, activated_on, addons)
@@ -238,6 +240,8 @@ SUBSCRIPTIONS = {
     "9876500008": ("POST_SOLO", "2025-05-05", ""),
     "9876500009": ("FIBER_PLUS", "2025-09-01", ""),
     "9876500010": ("PPD_84_VALUE", _days_ago(20), ""),  # 84-day validity
+    # Demo / development test account
+    "9876543210": ("PPD_VALUE", _days_ago(8), ""),  # 28-day validity, Prepaid Value
 }
 
 # a few tickets across statuses/categories

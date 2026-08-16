@@ -46,29 +46,123 @@ from vay.graph.utils import localized
 
 MAX_TOOL_ITERATIONS = 6
 
-# Repetition-loop guard on the SUB-AGENT's generated reply -- the same class of
-# fix project_context.md §5.3 already documents for ASR output ("Whisper
-# hallucinates ... post-ASR hallucination/repetition filter"), applied here to
-# LLM generation instead. Live testing surfaced the same degenerate-repeat
-# failure mode on the generation side: a smaller model (llama-3.1-8b-instant)
-# asked to translate concrete price/plan facts into Tamil sometimes locks onto
-# a short phrase and repeats it dozens of times instead of stopping (e.g.
-# "...299 ரூபாய் வரையிலான பயனர்களுக்கு " repeated ~30x) -- see
-# rag-tts-evaluuation.md for the captured example. Matches any 12-80 char
-# span that repeats 3+ times back-to-back and truncates right before it.
-_REPEAT_RE = re.compile(r"(.{12,80}?)\1{2,}", re.DOTALL)
+# Repetition-loop guard on the SUB-AGENT's generated reply.
+#
+# llama-3.1-8b-instant is prone to phrase/sentence repetition when generating
+# non-English (Tamil, Hindi) replies about factual/numeric content.  Two guards:
+#
+# Guard 1 — _REPEAT_RE: catches any 12–350 char span that repeats 2+ times
+#   back-to-back.  Upper bound raised from 80→350 to catch full Tamil/Hindi
+#   sentences (e.g. "நாங்கள் உங்களுக்கு உதவ முடியாத சில விஷயங்கள் உள்ளன."
+#   is ~70 UTF-8 bytes but >80 chars in codepoints on some builds — cap at 350
+#   to be safe).
+#
+# Guard 2 — _dedup_sentences: splits on sentence boundaries and removes any
+#   sentence that has already appeared earlier in the reply (case-insensitive,
+#   whitespace-normalised).  This catches the paragraph-level repeat pattern
+#   where the *same full sentence* appears 8+ times spread across multiple
+#   paragraphs, which _REPEAT_RE misses because the sentences aren't immediately
+#   adjacent (there may be punctuation/newlines between occurrences).
+_REPEAT_RE = re.compile(r"(.{12,350}?)\1{1,}", re.DOTALL)
+
+# Sentence splitter: split on . ! ? followed by whitespace or end-of-string,
+# keeping the delimiter attached to the preceding token.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?।।])\s+")
+
+
+def _dedup_sentences(text: str) -> str:
+    """Remove duplicate sentences (case/whitespace-insensitive) from a reply.
+
+    Preserves the first occurrence of each unique sentence; strips any that
+    appear again later.  Paragraph breaks (double newlines) are preserved
+    around the surviving sentences.
+    """
+    if not text:
+        return text
+    paragraphs = text.split("\n\n")
+    seen: set[str] = set()
+    out_paragraphs: list[str] = []
+    for para in paragraphs:
+        sentences = _SENT_SPLIT_RE.split(para.strip())
+        kept: list[str] = []
+        for sent in sentences:
+            key = " ".join(sent.lower().split())
+            if key and key not in seen:
+                seen.add(key)
+                kept.append(sent.strip())
+        if kept:
+            out_paragraphs.append(" ".join(kept))
+    return "\n\n".join(out_paragraphs)
+
+
+# Sentence-terminal punctuation: full stop, !, ?, Devanagari danda,
+# Tamil/Telugu punctuation, ellipsis.  Used to detect truncated fragments.
+_TERMINAL_PUNCT_RE = re.compile(r"[.!?\u0964\u0965\u0be6-\u0bf2\u2026]\s*$")
+# Non-terminal characters that signal the reply was cut mid-sentence.
+_FRAGMENT_END_RE = re.compile(r"[,;:\-–—\/]\s*$")
+
+
+def _is_complete_reply(text: str) -> bool:
+    """Return True when *text* looks like at least one complete sentence.
+
+    A reply is considered incomplete (fragment) when it:
+    - ends with a non-terminal character (comma, semicolon, dash, colon)
+    - contains no terminal punctuation at all AND is shorter than 80 chars
+      (a very short non-punctuated phrase is almost certainly a fragment)
+
+    This is used by _detoxify_repetition to decide whether a truncated result
+    should be returned or discarded (→ caller uses fallback template).
+    """
+    if not text:
+        return False
+    # Ends with a non-terminal character → definitely a fragment
+    if _FRAGMENT_END_RE.search(text):
+        return False
+    # Ends with terminal punctuation → complete
+    if _TERMINAL_PUNCT_RE.search(text):
+        return True
+    # No terminal punctuation but long enough to be a standalone phrase
+    return len(text) >= 80
 
 
 def _detoxify_repetition(text: str) -> str:
+    """Two-stage repetition filter for LLM output.
+
+    Stage 1 (_REPEAT_RE): catches short-to-medium span back-to-back repeats
+      (12–350 chars).  Truncates right before the first repeated block.  This
+      handles word/phrase loops like \"...299 ரூபாய் வரையிலான \" × 30.
+
+    Stage 2 (_dedup_sentences): removes any sentence that appears more than
+      once across the whole reply, regardless of adjacency.  This is the
+      primary defence for the paragraph-spread pattern seen in Tamil/Hindi
+      where the LLM repeats a full sentence 8+ times across separate paragraphs
+      — Stage 1 may not catch these if the repeated sentences aren't strictly
+      adjacent (there may be a period or newline between them).
+
+    Fragment guard: if the result after truncation is an incomplete sentence
+      (ends with comma/colon/dash or has no terminal punctuation and is very
+      short), returns "" so the caller falls back to the localized handoff
+      template rather than speaking a grammatically broken fragment.
+    """
     if not text:
         return text
+
+    # Stage 1: truncate on back-to-back short/medium span repeats
     match = _REPEAT_RE.search(text)
-    if not match:
-        return text
-    truncated = text[: match.start()].rstrip()
-    # If the repetition started almost immediately, there's nothing salvageable
-    # before it -- keep just the first clean occurrence instead of returning empty.
-    return truncated if len(truncated) >= 20 else text[: match.end(1)].rstrip()
+    if match:
+        truncated = text[: match.start()].rstrip()
+        # If truncation cuts too early (< 40 chars), keep first occurrence instead
+        candidate = truncated if len(truncated) >= 40 else text[: match.end(1)].rstrip()
+        # Fragment guard: if the candidate doesn't look like a complete sentence,
+        # discard it entirely so the caller's fallback template is used.
+        if not _is_complete_reply(candidate):
+            return ""
+        text = candidate
+
+    # Stage 2: sentence-level dedup (primary defence for Tamil/Hindi loops)
+    text = _dedup_sentences(text)
+
+    return text.strip()
 
 HANDOFF_MESSAGE_TEMPLATES = {
     "en": (
