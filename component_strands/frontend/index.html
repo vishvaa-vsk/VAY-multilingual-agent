@@ -7,7 +7,7 @@
   <title>Strands Visualizer & Mic</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Electrolize&display=swap" rel="stylesheet">
   
   <!-- Silero VAD WebAssembly dependencies -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
@@ -30,6 +30,7 @@
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      font-family: 'Electrolize', sans-serif !important;
     }
 
     body,
@@ -37,8 +38,9 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: transparent;
-      font-family: 'Outfit', sans-serif;
+      background: transparent !important;
+      background-color: transparent !important;
+      font-family: 'Electrolize', sans-serif !important;
       color: var(--text-main);
     }
 
@@ -49,13 +51,16 @@
       width: 100%;
       height: 100%;
       z-index: 1;
-      background: transparent;
+      background: transparent !important;
+      background-color: transparent !important;
     }
 
     .strands-container canvas {
       display: block;
       width: 100%;
       height: 100%;
+      background: transparent !important;
+      background-color: transparent !important;
     }
 
     .ui-overlay {
@@ -82,14 +87,16 @@
     }
 
     .header-bar h1 {
-      font-size: 20px;
-      font-weight: 700;
+      font-size: 60px;
+      font-weight: 9000;
       letter-spacing: 1px;
       text-transform: uppercase;
       background: linear-gradient(135deg, #f97316, #7c3aed, #06b6d4);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      margin-bottom: 4px;
+      -webkit-text-stroke: 0.1px #2d2d2d;
+      filter: drop-shadow(0 0 1px #b440f8) drop-shadow(0 1px 2px rgba(255, 255, 255, 0.4));
+      margin-bottom: 2px;
     }
 
     .header-bar p {
@@ -368,6 +375,150 @@
       box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
     }
 
+    /* SpecularButton Styles */
+    .specular-button {
+      --sb-radius: 18px;
+      --sb-tint: #ffffff;
+      --sb-tint-opacity: 0;
+      --sb-blur: 0px;
+      --sb-text-color: #f5f5f5;
+
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      margin: 0;
+      font-family: inherit;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      line-height: 1;
+      color: var(--sb-text-color);
+      background: color-mix(in srgb, var(--sb-tint) calc(var(--sb-tint-opacity) * 100%), transparent);
+      border-radius: var(--sb-radius);
+      backdrop-filter: blur(var(--sb-blur));
+      -webkit-backdrop-filter: blur(var(--sb-blur));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 8px 24px rgba(0, 0, 0, 0.25);
+      cursor: pointer;
+      outline: none;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      user-select: none;
+    }
+
+    .specular-button:hover {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.15),
+        0 10px 28px rgba(239, 68, 68, 0.3);
+    }
+
+    .specular-button:active {
+      transform: scale(0.96);
+    }
+
+    .specular-button:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--sb-text-color) 60%, transparent);
+      outline-offset: 3px;
+    }
+
+    .specular-button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .specular-button:disabled:active {
+      transform: none;
+    }
+
+    .specular-button--sm {
+      font-size: 0.85rem;
+      padding: 10px 22px;
+    }
+
+    .specular-button--md {
+      font-size: 0.95rem;
+      padding: 12px 24px;
+    }
+
+    .specular-button--lg {
+      font-size: 1.12rem;
+      padding: 16px 36px;
+    }
+
+    .specular-button__fx {
+      position: absolute;
+      inset: -20px;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .specular-button__fx canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .specular-button__label {
+      position: relative;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .end-button-container {
+      position: relative;
+      width: 120px;
+      height: 120px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .end-button {
+      position: relative;
+      width: 80px !important;
+      height: 80px !important;
+      border-radius: 50% !important;
+      padding: 0 !important;
+      border: 1px solid rgba(239, 68, 68, 0.4) !important;
+      background: rgba(239, 68, 68, 0.12) !important;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37), 0 0 20px rgba(239, 68, 68, 0.2) !important;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      z-index: 5;
+    }
+
+    .end-button:hover {
+      transform: scale(1.08);
+      box-shadow: 0 0 35px rgba(239, 68, 68, 0.6), inset 0 0 15px rgba(239, 68, 68, 0.3) !important;
+      background: rgba(239, 68, 68, 0.25) !important;
+      border-color: rgba(239, 68, 68, 0.7) !important;
+    }
+
+    .end-button:active {
+      transform: scale(0.95);
+    }
+
+    .end-button svg {
+      width: 28px;
+      height: 28px;
+      stroke: #ef4444;
+      transition: all 0.3s ease;
+    }
+
+    .end-button:hover svg {
+      stroke: #ffffff;
+      transform: rotate(90deg);
+    }
   </style>
 </head>
 
@@ -377,7 +528,7 @@
 
   <div class="ui-overlay">
     <div class="header-bar">
-      <h1>VAY Assistant</h1>
+      <h1>VAY</h1>
       <p id="sub-status">Speech Interface Active</p>
     </div>
 
@@ -398,9 +549,19 @@
           </svg>
         </button>
       </div>
-      <button class="control-btn btn-danger" id="end-btn">
-        End
-      </button>
+      <div class="end-button-container">
+        <button class="specular-button end-button" id="end-btn" title="End Session"
+          style="--sb-radius: 40px; --sb-tint: #ef4444; --sb-tint-opacity: 0.16; --sb-blur: 16px; --sb-text-color: #ef4444;">
+          <span id="end-btn-fx" class="specular-button__fx" aria-hidden="true"></span>
+          <span class="specular-button__label">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#ef4444" stroke-width="2.4"
+              stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </span>
+        </button>
+      </div>
     </div>
   </div>
 
@@ -649,16 +810,16 @@
 
       if (state === 'idle') {
         setMicIcon('mic');
-        subStatusTxt.textContent = 'Microphone Paused (Click to speak)';
+        subStatusTxt.textContent = 'Click mic to start';
       } else if (state === 'listening') {
         setMicIcon('stop');
-        subStatusTxt.textContent = 'Listening... (Click mic to pause)';
+        subStatusTxt.textContent = 'Listening...';
       } else if (state === 'thinking') {
         setMicIcon('thinking');
-        subStatusTxt.textContent = 'Processing request...';
+        subStatusTxt.textContent = '.......';
       } else if (state === 'speaking') {
         setMicIcon('mic');
-        subStatusTxt.textContent = 'Assistant responding...';
+        subStatusTxt.textContent = 'Answering....';
       } else if (state === 'handoff' || state === 'ended') {
         setMicIcon('mic');
         subStatusTxt.textContent = 'Call Ended';
@@ -703,6 +864,27 @@
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.canvas.style.backgroundColor = 'transparent';
+    gl.canvas.style.background = 'transparent';
+
+    function ensureTransparency() {
+      try {
+        if (window.parent && window.parent.document) {
+          const iframes = window.parent.document.querySelectorAll('iframe');
+          for (const ifr of iframes) {
+            if (ifr.contentWindow === window) {
+              ifr.style.background = 'transparent';
+              ifr.style.backgroundColor = 'transparent';
+              ifr.setAttribute('allowtransparency', 'true');
+              if (ifr.parentElement) {
+                ifr.parentElement.style.background = 'transparent';
+                ifr.parentElement.style.backgroundColor = 'transparent';
+              }
+            }
+          }
+        }
+      } catch (e) { }
+    }
+    ensureTransparency();
 
     const geometry = new Triangle(gl);
     if (geometry.attributes.uv) {
@@ -775,7 +957,7 @@
 
       // Interpolate audio reactivity smoothly — low factor = very steady, no jolting
       currentSpeedMod += (targetSpeedMod - currentSpeedMod) * 0.04;
-      currentAmpMod   += (targetAmpMod   - currentAmpMod)   * 0.04;
+      currentAmpMod += (targetAmpMod - currentAmpMod) * 0.04;
 
       program.uniforms.uTime.value = t * 0.001;
       program.uniforms.uColors.value = buildPalette(config.colors);
@@ -825,7 +1007,7 @@
         targetAmpMod   = Math.min((avg / 255) * 0.3, 0.25);
         targetSpeedMod = Math.min((avg / 255) * 0.15, 0.12);
       } else {
-        targetAmpMod   = 0;
+        targetAmpMod = 0;
         targetSpeedMod = 0;
       }
     };
@@ -1124,6 +1306,176 @@
       updateUIState('idle');
       sendMessageToStreamlit({ event: "end_session" });
     });
+
+    // Initialize SpecularButton WebGL Shader on End Session Button
+    function initEndBtnSpecular() {
+      const btn = document.getElementById('end-btn');
+      const fx = document.getElementById('end-btn-fx');
+      if (!btn || !fx) return;
+
+      const PAD = 20;
+      const VERT_SPECULAR = `#version 300 es
+      in vec2 position;
+      void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+      }
+      `;
+
+      const FRAG_SPECULAR = `#version 300 es
+      precision highp float;
+
+      uniform vec2 uCenter;
+      uniform vec2 uHalfSize;
+      uniform float uRadius;
+      uniform float uAngle;
+      uniform float uPx;
+      uniform vec3 uLineColor;
+      uniform vec3 uBaseColor;
+      uniform float uIntensity;
+      uniform float uShineSize;
+      uniform float uShineFade;
+      uniform float uThickness;
+      uniform float uBaseWidth;
+
+      out vec4 fragColor;
+
+      float sdRoundedRect(vec2 p, vec2 b, float r) {
+        vec2 q = abs(p) - b + r;
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+      }
+
+      float shapeSDF(vec2 p) { return sdRoundedRect(p, uHalfSize, uRadius); }
+
+      float gaussianLine(float d, float sigma) {
+        float x = d / (sigma + 1e-6);
+        float k = mix(1.0, 1.6, smoothstep(0.0, 1.5, x));
+        return exp(-k * x * x);
+      }
+
+      void main() {
+        vec2 p = gl_FragCoord.xy - uCenter;
+        float d = shapeSDF(p);
+        vec2 L = vec2(cos(uAngle), sin(uAngle));
+
+        float base = (1.0 - smoothstep(0.0, uBaseWidth, abs(d))) * 0.45;
+
+        vec2 nEll = normalize(p / (uHalfSize * uHalfSize) + 1e-6);
+        float phi = acos(clamp(abs(dot(nEll, L)), 0.0, 1.0));
+        float rim = 1.0 - smoothstep(uShineSize - uShineFade, uShineSize + uShineFade + 1e-4, phi);
+        float line = gaussianLine(d, uThickness);
+        float edgeClamp = 1.0 - smoothstep(0.5 * uPx, 3.0 * uPx, abs(d));
+        float hi = line * rim * edgeClamp * uIntensity;
+
+        vec3 col = uBaseColor * base + uLineColor * hi;
+        float a = clamp(base + hi, 0.0, 1.0);
+        fragColor = vec4(col, a);
+      }
+      `;
+
+      const dpr = window.devicePixelRatio || 1;
+      const sRenderer = new Renderer({ alpha: true, premultipliedAlpha: true, antialias: true, dpr });
+      const sGl = sRenderer.gl;
+      sGl.clearColor(0, 0, 0, 0);
+      sGl.enable(sGl.BLEND);
+      sGl.blendFunc(sGl.ONE, sGl.ONE_MINUS_SRC_ALPHA);
+
+      const sGeometry = new Triangle(sGl);
+      if (sGeometry.attributes.uv) delete sGeometry.attributes.uv;
+
+      const sProgram = new Program(sGl, {
+        vertex: VERT_SPECULAR,
+        fragment: FRAG_SPECULAR,
+        uniforms: {
+          uCenter: { value: [0, 0] },
+          uHalfSize: { value: [1, 1] },
+          uRadius: { value: 0 },
+          uAngle: { value: 2.4 },
+          uPx: { value: dpr },
+          uLineColor: { value: [1, 0.42, 0.42] },
+          uBaseColor: { value: [0.75, 0.31, 0.31] },
+          uIntensity: { value: 2.5 },
+          uShineSize: { value: (30 * Math.PI) / 180 },
+          uShineFade: { value: (45 * Math.PI) / 180 },
+          uThickness: { value: 1.2 * dpr },
+          uBaseWidth: { value: dpr }
+        }
+      });
+
+      const sMesh = new Mesh(sGl, { geometry: sGeometry, program: sProgram });
+      fx.appendChild(sGl.canvas);
+
+      const sizeRef = { w: 1, h: 1 };
+      const resizeSpecular = () => {
+        const rect = btn.getBoundingClientRect();
+        const w = rect.width;
+        const h = rect.height;
+        if (w <= 0 || h <= 0) return;
+        sizeRef.w = w;
+        sizeRef.h = h;
+        sRenderer.setSize(w + PAD * 2, h + PAD * 2);
+        sProgram.uniforms.uCenter.value = [(PAD + w / 2) * dpr, (PAD + h / 2) * dpr];
+        sProgram.uniforms.uHalfSize.value = [(w / 2) * dpr, (h / 2) * dpr];
+      };
+      const ro = new ResizeObserver(resizeSpecular);
+      ro.observe(btn);
+      resizeSpecular();
+
+      let pointerAngle = null;
+      let proximityT = 0;
+      const proximityRadius = 250;
+
+      const onPointerMove = e => {
+        const rect = btn.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = Math.max(rect.left - e.clientX, 0, e.clientX - rect.right);
+        const dy = Math.max(rect.top - e.clientY, 0, e.clientY - rect.bottom);
+        const dist = Math.hypot(dx, dy);
+        if (dist === 0) {
+          const nx = (e.clientX - cx) / (rect.width / 2);
+          const ny = (cy - e.clientY) / (rect.height / 2);
+          pointerAngle = Math.atan2(2 / rect.height, -2 / rect.width) + nx * 0.3 + ny * 0.15;
+        } else {
+          pointerAngle = Math.atan2(cy - e.clientY, e.clientX - cx);
+        }
+        const t = Math.max(0, 1 - dist / Math.max(proximityRadius, 1));
+        proximityT = t * t * (3 - 2 * t);
+      };
+      window.addEventListener('pointermove', onPointerMove);
+
+      let angle = 2.4;
+      let idleAngle = 2.4;
+      let bright = 0;
+      let last = performance.now();
+      let raf = 0;
+
+      const lineC = new Color('#ff6b6b');
+      const baseC = new Color('#be5050');
+
+      const updateSpecular = now => {
+        raf = requestAnimationFrame(updateSpecular);
+        const dt = Math.min((now - last) / 1000, 0.05);
+        last = now;
+
+        idleAngle += 0.35 * dt;
+        const steer = pointerAngle != null;
+        const target = steer ? pointerAngle : idleAngle;
+        const diff = ((target - angle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        angle += diff * (1 - Math.exp(-dt * 7));
+
+        bright += (proximityT - bright) * (1 - Math.exp(-dt * 8));
+
+        sProgram.uniforms.uAngle.value = angle;
+        sProgram.uniforms.uRadius.value = (Math.min(sizeRef.w, sizeRef.h) / 2) * dpr;
+        sProgram.uniforms.uLineColor.value = [lineC.r, lineC.g, lineC.b];
+        sProgram.uniforms.uBaseColor.value = [baseC.r, baseC.g, baseC.b];
+        sProgram.uniforms.uIntensity.value = 2.5 * bright;
+        sRenderer.render({ scene: sMesh });
+      };
+      raf = requestAnimationFrame(updateSpecular);
+    }
+
+    initEndBtnSpecular();
 
     // Initialize communication with Streamlit
     initStreamlitComponent();

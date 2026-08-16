@@ -21,6 +21,8 @@ from audio_handler import decode_audio, encode_audio_bytes
 from component_strands import strands_component
 from component_galaxy import galaxy_component
 from component_aurora import aurora_component
+from component_specular_button import specular_button
+from component_splash_cursor import splash_cursor_component
 
 import io
 import soundfile as sf
@@ -51,6 +53,14 @@ except ImportError:
 # Inject custom global CSS for premium UI styling
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Electrolize&display=swap');
+
+    /* Global Electrolize Typography */
+    html, body, [class*="css"], .stApp, *,
+    h1, h2, h3, h4, h5, h6, p, span, div, input, select, textarea, button, label {
+        font-family: 'Electrolize', sans-serif !important;
+    }
+
     /* Hide Streamlit top header bar, decoration line, and toolbar */
     header[data-testid="stHeader"] {
         display: none !important;
@@ -75,10 +85,25 @@ st.markdown("""
         padding-top: 1.5rem !important;
     }
 
+    /* Hide Streamlit heading anchor links/hyperlinks next to titles */
+    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* All custom components and iframes transparent */
+    iframe,
+    div[data-testid="stCustomComponentV1"],
+    div[data-testid="element-container"]:has(iframe) {
+        background: transparent !important;
+        background-color: transparent !important;
+    }
+
     /* Dark Theme Core Styles */
     .stApp {
         background: radial-gradient(circle at center, #111115 0%, #070708 100%);
         color: #f3f4f6;
+        font-family: 'Electrolize', sans-serif !important;
     }
     
     /* Custom Sidebar styling */
@@ -173,43 +198,214 @@ st.markdown("""
     }
 
     /* ==================================================== */
-    /* COUNTRY CODE & PHONE INPUT COLOR SETTINGS            */
+    /* COUNTRY CODE & PHONE INPUT UNIFIED GALAXY THEME     */
     /* ==================================================== */
     
-    /* 1. "Country Code" Label Color */
-    div[data-testid="stSelectbox"] label p {
-        color: #f97316 !important; /* <--- CHANGE COUNTRY CODE LABEL COLOR HERE */
-        font-weight: 600;
-        font-size: 14px;
-        letter-spacing: 0.5px;
-    }
-
-    /* 2. Country Code Dropdown Box (Background, Border, Selected Text) */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-        background-color: rgba(255, 255, 255, 0.1) !important; /* <--- CHANGE BOX BACKGROUND HERE */
-        border: 1px solid rgba(249, 115, 22, 0.4) !important;   /* <--- CHANGE BORDER COLOR HERE */
-        border-radius: 10px !important;
-    }
-
-    /* 3. Country Code Selected Value Text Color */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] * {
-        color: #000!important;                                 /* <--- CHANGE TEXT VALUE COLOR HERE */
-    }
-
-    /* 4. "Phone Number" Label Color */
+    /* 1. Country Code & Phone Number Labels (High Contrast Radiant Gradient) */
+    div[data-testid="stSelectbox"] label p,
     div[data-testid="stTextInput"] label p {
-        color: #06b6d4 !important; /* <--- CHANGE PHONE NUMBER LABEL COLOR HERE */
-        font-weight: 600;
-        font-size: 14px;
-        letter-spacing: 0.5px;
+        background: linear-gradient(135deg, #fb923c, #c084fc, #38bdf8) !important;
+        -webkit-background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        font-weight: 800 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.6px !important;
+        filter: drop-shadow(0 0 3px rgba(192, 132, 252, 0.25)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7)) !important;
+        display: inline-block !important;
+        margin-bottom: 6px !important;
     }
 
-    /* 5. Phone Number Input Box (Background & Border) */
+    /* 2. Full 100% Transparency on ALL elements of Selectbox and TextInput */
+    div[data-testid="stSelectbox"],
+    div[data-testid="stSelectbox"] *,
+    div[data-testid="stSelectbox"] div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] input,
+    div[data-testid="stTextInput"],
+    div[data-testid="stTextInput"] *,
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stTextInput"] > div > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"],
     div[data-testid="stTextInput"] input {
-        background-color: rgba(0, 0, 0, 0) !important;
-        border: 1px solid rgba(6, 182, 212, 0.4) !important;
-        color: #00000 !important;
-        border-radius: 10px !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+    }
+
+    /* 3. Galaxy Themed Border on Country Code and Phone Number Boxes */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stTextInput"] input {
+        background: transparent !important;
+        background-color: transparent !important;
+        border: 1.5px solid rgba(192, 132, 252, 0.65) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 0 16px rgba(192, 132, 252, 0.3), 0 0 24px rgba(56, 189, 248, 0.2) !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        transition: all 0.3s ease !important;
+        min-height: 48px !important;
+        height: 48px !important;
+        box-sizing: border-box !important;
+        font-size: 15px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.8px !important;
+    }
+
+    /* Clear intermediate wrappers for TextInput */
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"] {
+        border: none !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stTextInput"] input {
+        padding: 10px 16px !important;
+        letter-spacing: 1.2px !important;
+        width: 100% !important;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        padding: 0 14px !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+
+    /* Unified Hover and Focus States with Galaxy Neon Glow */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"]:hover > div,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"]:focus-within > div,
+    div[data-testid="stTextInput"] input:hover,
+    div[data-testid="stTextInput"] input:focus {
+        background: transparent !important;
+        background-color: transparent !important;
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 22px rgba(192, 132, 252, 0.65), 0 0 35px rgba(56, 189, 248, 0.5) !important;
+    }
+
+    /* Selected Value Text in Country Code Dropdown & Typed Number (High Contrast Pure White) */
+    div[data-testid="stSelectbox"],
+    div[data-testid="stSelectbox"] *,
+    div[data-testid="stSelectbox"] input,
+    div[data-testid="stSelectbox"] input:focus,
+    div[data-testid="stSelectbox"] input:active,
+    div[data-testid="stSelectbox"] input:disabled,
+    div[data-testid="stSelectbox"] [data-baseweb="select"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] span,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] p,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] input,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [aria-selected="true"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [data-testid="stMarkdownContainer"] p,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div[value],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div[title],
+    div[data-testid="stTextInput"] input {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 1 !important;
+        font-weight: 700 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.8px !important;
+        text-shadow: none !important;
+    }
+
+    div[data-testid="stSelectbox"] input::placeholder {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 600 !important;
+    }
+
+    div[data-testid="stSelectbox"] svg {
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
+        transition: all 0.3s ease !important;
+        opacity: 1 !important;
+    }
+    div[data-testid="stSelectbox"]:hover svg {
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
+    }
+
+    /* High Contrast Placeholder text (Pure White) */
+    div[data-testid"stTextInput"] input::placeholder,
+    div[data-testid="stTextInput"] input::-webkit-input-placeholder,
+    div[data-testid="stTextInput"] input::-moz-placeholder {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.4px !important;
+        text-shadow: none !important;
+    }
+
+    /* "Press Enter to apply" instructions & helper text (Pure White) */
+    div[data-testid="InputInstructions"],
+    div[data-testid="InputInstructions"] *,
+    div[data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"],
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] *,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] small,
+    div[data-testid="stTextInput"] span {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
+    }
+
+    /* Dropdown Popover Menu (All Options Pure White) */
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="menu"],
+    ul[data-testid="stSelectboxVirtualDropdown"],
+    ul[role="listbox"] {
+        background: rgba(14, 14, 28, 0.95) !important;
+        background-color: rgba(14, 14, 28, 0.95) !important;
+        border: 1px solid rgba(6, 182, 212, 0.45) !important;
+        backdrop-filter: blur(20px) !important;
+        -webkit-backdrop-filter: blur(20px) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 20px rgba(6, 182, 212, 0.25) !important;
+    }
+    div[data-baseweb="popover"] li,
+    div[data-baseweb="popover"] li *,
+    div[data-baseweb="popover"] span,
+    div[data-baseweb="popover"] div,
+    ul[data-testid="stSelectboxVirtualDropdown"] li,
+    ul[data-testid="stSelectboxVirtualDropdown"] li *,
+    ul[role="listbox"] li,
+    ul[role="listbox"] li *,
+    li[role="option"],
+    li[role="option"] * {
+        background: transparent !important;
+        background-color: transparent !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.6px !important;
+        padding: 10px 14px !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-baseweb="popover"] li:hover,
+    ul[data-testid="stSelectboxVirtualDropdown"] li:hover,
+    ul[role="listbox"] li:hover,
+    li[role="option"]:hover,
+    li[aria-selected="true"] {
+        background: rgba(6, 182, 212, 0.35) !important;
+        background-color: rgba(6, 182, 212, 0.35) !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -518,6 +714,19 @@ def escalate_session(reason):
     st.session_state.current_pipeline_data["action"] = f"Escalated ({reason})"
     st.rerun()
 
+# ----------------- GLOBAL INTERACTIVE FLUID SPLASH CURSOR -----------------
+# Render interactive React Bits SplashCursor component
+splash_cursor_component(
+    density_dissipation=5.0,
+    velocity_dissipation=8.5,
+    pressure=0.05,
+    splat_radius=0.05,
+    shading=False,
+    rainbow_mode=True,
+    color="#7c1ed6",
+    key="global_splash_cursor"
+)
+
 # ----------------- MAIN LAYOUT ROUTING -----------------
 if not st.session_state.session_started:
     # Render pure white Galaxy WebGL background from React Bits
@@ -546,13 +755,13 @@ if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
     _, login_col, _ = st.columns([1, 1.4, 1])
     with login_col:
-        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 145px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
+        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 200px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
         st.markdown(f"""
-        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 20px 50px rgba(0, 0, 0, 0);">
+        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 0px rgba(0, 0, 0, 0);">
             {img_html}
-            <h1 style="margin-top: 0; font-weight: 800; font-size: 28px; background: linear-gradient(135deg, #f97316, #a855f7, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 1.5px;">VAY ASSISTANT</h1>
-            <p style="color: #cbd5e1; font-size: 14px; margin-top: 6px; margin-bottom: 0; letter-spacing: 0.3px;">Next-Gen Multilingual Voice Operator Portal</p>
-            <p style="color: #64748b; font-size: 12px; margin-top: 4px; margin-bottom: 20px;">Powered by Real-Time Neural Speech & Hybrid RAG</p>
+            <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px; padding-left: 15px;">VAY</h1>
+            <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: 8px; margin-bottom: 0; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
+           
         </div>
         """, unsafe_allow_html=True)
         
@@ -571,24 +780,49 @@ if not st.session_state.session_started:
                 placeholder="Enter 10-digit mobile number"
             )
             
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.button("Start Session", type="primary", use_container_width=True):
-                # Validation rules
-                if not phone_input:
-                    st.warning("⚠️ Please enter your phone number.")
-                elif not phone_input.isdigit():
-                    st.error("❌ Phone number must contain only numeric digits.")
-                elif len(phone_input) != 10:
-                    st.error(f"❌ Phone number must be exactly 10 digits (current length: {len(phone_input)}).")
-                else:
-                    selected_code = country_code.split(" ")[0]
-                    st.session_state.phone_number = f"{selected_code} {phone_input}"
-                    st.session_state.component_key += 1 # Force fresh component instance
-                    st.session_state.session_started = True
-                    st.success("✅ Session started successfully!")
-                    time.sleep(0.6)
-                    st.rerun()
+            # Render SpecularButton component from React Bits
+            start_btn_event = specular_button(
+                label="Start Session",
+                size="md",
+                radius=60,
+                tint="#7c3aed",
+                tintOpacity=0.0,
+                blur=0,
+                textColor="#ffffff",
+                lineColor="#60EFFF",
+                baseColor="#7c3aed",
+                intensity=3.5,
+                shineSize=35,
+                shineFade=48,
+                thickness=1.4,
+                speed=0.35,
+                followMouse=True,
+                proximity=250,
+                autoAnimate=False,
+                fullWidth=False,
+                key=f"start_session_btn_{st.session_state.component_key}"
+            )
+
+            if start_btn_event is not None and start_btn_event.get("event") == "click":
+                event_id = start_btn_event.get("id")
+                if event_id and event_id != st.session_state.get("last_processed_event_id"):
+                    st.session_state.last_processed_event_id = event_id
+
+                    # Validation rules
+                    if not phone_input:
+                        st.warning("⚠️ Please enter your phone number.")
+                    elif not phone_input.isdigit():
+                        st.error("❌ Phone number must contain only numeric digits.")
+                    elif len(phone_input) != 10:
+                        st.error(f"❌ Phone number must be exactly 10 digits (current length: {len(phone_input)}).")
+                    else:
+                        selected_code = country_code.split(" ")[0]
+                        st.session_state.phone_number = f"{selected_code} {phone_input}"
+                        st.session_state.component_key += 1 # Force fresh component instance
+                        st.session_state.session_started = True
+                        st.success("✅ Session started successfully!")
+                        time.sleep(0.6)
+                        st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 else:
     # Hide sidebar and side tab controls completely on the session page
@@ -610,9 +844,9 @@ else:
     # Render Aurora WebGL background with authentic Northern Lights colors
     aurora_component(
         colorStops=["#00FF87", "#60EFFF", "#7C3AED"],
-        amplitude=1.0,
-        blend=0.55,
-        speed=0.45,
+        amplitude=0.25,
+        blend=0.75,
+        speed=0.25,
         key="aurora_session_bg"
     )
 

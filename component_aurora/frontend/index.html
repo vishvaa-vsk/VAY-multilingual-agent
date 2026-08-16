@@ -138,13 +138,19 @@ void main() {
   vec3 rampColor;
   COLOR_RAMP(colors, uv.x, rampColor);
   
-  float height = snoise(vec2(uv.x * 2.0 + uTime * 0.1, uTime * 0.25)) * 0.5 * uAmplitude;
+  // Gentle, calm wave with reduced amplitude and slow, elegant flow
+  float height = snoise(vec2(uv.x * 1.5 + uTime * 0.06, uTime * 0.12)) * 0.35 * uAmplitude;
   height = exp(height);
-  height = (uv.y * 2.0 - height + 0.2);
-  float intensity = 0.6 * height;
+  height = (uv.y * 1.6 - height + 0.1);
+  float intensity = 0.5 * max(0.0, height);
   
-  float midPoint = 0.20;
-  float auroraAlpha = smoothstep(midPoint - uBlend * 0.5, midPoint + uBlend * 0.5, intensity);
+  // Smooth atmospheric falloff to seamlessly merge with the dark background
+  float bottomFade = smoothstep(0.02, 0.45, uv.y);
+  float topFade = smoothstep(1.0, 0.65, uv.y);
+  float verticalFade = bottomFade * topFade;
+  
+  float midPoint = 0.15;
+  float auroraAlpha = smoothstep(midPoint - uBlend * 0.45, midPoint + uBlend * 0.45, intensity) * verticalFade * 0.65;
   
   vec3 auroraColor = intensity * rampColor;
   
@@ -155,9 +161,9 @@ void main() {
     // Configuration object with real Aurora Borealis colors
     let config = {
       colorStops: ['#00FF87', '#60EFFF', '#7C3AED'],
-      amplitude: 1.0,
-      blend: 0.5,
-      speed: 0.5
+      amplitude: 0.25,
+      blend: 0.75,
+      speed: 0.25
     };
 
     const ctn = document.getElementById('aurora-ctn');
