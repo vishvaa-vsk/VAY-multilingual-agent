@@ -64,6 +64,12 @@ st.markdown("""
         padding-top: 1.5rem !important;
     }
 
+    /* Hide Streamlit heading anchor links/hyperlinks next to titles */
+    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
     /* Dark Theme Core Styles */
     .stApp {
         background: radial-gradient(circle at center, #111115 0%, #070708 100%);
@@ -661,7 +667,7 @@ if not st.session_state.session_started:
         st.markdown(f"""
         <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 20px 50px rgba(0, 0, 0, 0);">
             {img_html}
-            <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px;">VAY ASSISTANT</h1>
+            <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px; padding-left: 15px;">VAY</h1>
             <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: 8px; margin-bottom: 0; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
            
         </div>
