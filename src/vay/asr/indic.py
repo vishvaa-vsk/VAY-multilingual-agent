@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from vay.asr.base import BaseASR
+from vay.config import settings
 from vay.types import ASRResult, LanguageTier
 
 
@@ -17,36 +18,77 @@ class IndicConformerASR(BaseASR):
 
     def __init__(self, model_id: str = "ai4bharat/indic-conformer-600m-multilingual") -> None:
         self.model_id = model_id
-        self.model: Any = None
+        print(f"[IndicConformer] Loading model {model_id}. Ensure you are authenticated with HuggingFace (HF_TOKEN) as this is a gated model.")
+        try:
+            import os
+            from dotenv import load_dotenv
+            from transformers import AutoModel
+            
+            # Ensure environment variables are loaded
+            load_dotenv()
+            hf_token = os.environ.get("HF_TOKEN")
+            
+            self.model = AutoModel.from_pretrained(
+                self.model_id, 
+                trust_remote_code=True,
+                token=hf_token
+            )
+            self.model.eval()
+            if torch.cuda.is_available():
+                self.model = self.model.to('cuda')
+        except Exception as e:
+            print(f"[IndicConformer] Failed to load model: {e}")
+            self.model = None
 
     def transcribe(self, audio_tensor: torch.Tensor, language: str) -> ASRResult:
-        """Transcribe Tamil ('ta') or Hindi ('hi') speech audio.
-
-        Args:
-            audio_tensor: 1D torch float32 audio tensor (16kHz mono).
-            language: Language code ('ta' or 'hi').
-
-        Returns:
-            ASRResult containing raw transcribed text.
-        """
-        if language not in ("ta", "hi"):
+        """Transcribe speech audio using the actual IndicConformer model."""
+        if language not in settings.tier1_languages:
             raise ValueError(
-                f"IndicConformer only supports Tier 1 languages ('ta', 'hi'), got: '{language}'"
+                f"IndicConformer only supports Tier 1 languages, got: '{language}'"
             )
 
-        # Ensure wav_tensor has shape [1, num_samples]
-        if audio_tensor.ndim == 1:
-            audio_tensor.unsqueeze(0)
+        if self.model is None:
+            return ASRResult(
+                raw_text="[IndicConformer Model Not Loaded - Check HF_TOKEN]",
+                detected_language=language,
+                language_tier=LanguageTier.TIER_1,
+                confidence=0.0,
+                model_used=self.model_id,
+            )
 
-        # Skeleton transcript simulation
-        simulated_text = (
-            "என் பில் தொகையை சரிபார்க்க வேண்டும்" if language == "ta" else "मेरा बिल विवरण देखना है"
-        )
+        # Ensure audio_tensor has shape [1, num_samples]
+        # VAD might return [num_samples, 1], so we flatten and add batch dim
+        audio_tensor = audio_tensor.view(1, -1)
+            
+        if torch.cuda.is_available():
+            audio_tensor = audio_tensor.to('cuda')
+
+        try:
+            with torch.no_grad():
+                # Inference call per AI4Bharat documentation (via project_context.md)
+                output = self.model(audio_tensor, language, "rnnt")
+                
+            # Parse output flexibly (could be dict, list, or string depending on version)
+            if isinstance(output, dict):
+                transcribed_text = output.get("text", str(output))
+            elif isinstance(output, list) and len(output) > 0:
+                if isinstance(output[0], dict):
+                    transcribed_text = output[0].get("text", str(output[0]))
+                elif isinstance(output[0], str):
+                    transcribed_text = output[0]
+                else:
+                    transcribed_text = str(output[0])
+            else:
+                transcribed_text = str(output)
+                
+        except Exception as e:
+            print(f"[IndicConformer] Inference error: {e}")
+            transcribed_text = f"[Inference Error: {e}]"
 
         return ASRResult(
-            raw_text=simulated_text,
+            raw_text=transcribed_text,
             detected_language=language,
             language_tier=LanguageTier.TIER_1,
-            confidence=0.95,
+            confidence=0.95,  # IndicConformer doesn't reliably return word confidences in the base call
             model_used=self.model_id,
         )
