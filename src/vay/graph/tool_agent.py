@@ -162,6 +162,9 @@ def _detoxify_repetition(text: str) -> str:
     # Stage 2: sentence-level dedup (primary defence for Tamil/Hindi loops)
     text = _dedup_sentences(text)
 
+    # Post-processing: force English telecom jargon that small models stubbornly translate
+    text = text.replace("தரவு", "data").replace("அழைப்புகள்", "calls").replace("வாலிடிடி", "validity").replace("அலகுகள்", "packs")
+
     return text.strip()
 
 HANDOFF_MESSAGE_TEMPLATES = {
@@ -223,8 +226,7 @@ def run_tool_agent(
             # The model hallucinated something the Groq API rejected outright before we
             # ever got a normal response back (e.g. calling an unregistered tool name) --
             # degrade to a safe, guardrail-recognized reply instead of crashing the call.
-            if show_debug:
-                print(f"  [tool-calling LLM call failed, degrading to handoff: {e}]")
+            print(f"  [ERROR] tool-calling LLM call failed, degrading to handoff: {e}")
             return localized(TOOL_LOOP_FAILURE_TEMPLATES, language)
         messages.append(ai_msg)
 

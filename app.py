@@ -541,9 +541,8 @@ def get_agent_graph():
     return build_graph()
 
 # ----------------- BACKGROUND MODEL PRELOADING -----------------
-if "models_preloading" not in st.session_state:
-    st.session_state.models_preloading = True
-    
+@st.cache_resource
+def trigger_background_preload():
     import threading
     import subprocess
     def preload_models():
@@ -568,6 +567,10 @@ if "models_preloading" not in st.session_state:
             print(f"[Background Preload] Error starting KB build: {e}")
             
     threading.Thread(target=preload_models, daemon=True).start()
+    return True
+
+# Call it so it executes if it hasn't already for this server instance
+trigger_background_preload()
 
 def process_real_audio(base64_audio):
     """
@@ -657,9 +660,8 @@ def process_real_audio(base64_audio):
         
         # 7. Check for call termination
         if result_state.get("call_end_requested") or result_state.get("handoff"):
-            st.session_state.status = "handoff"
-            st.rerun()
-            return
+            st.session_state.pending_handoff = True
+            # Proceed to TTS generation below so the user hears the goodbye/handoff message FIRST
             
         # 8. Generate TTS
         t_tts_start = time.time()
@@ -998,7 +1000,17 @@ else:
         if event_id and event_id != st.session_state.get("last_processed_event_id"):
             st.session_state.last_processed_event_id = event_id
 
-            if event_name == "mic_start":
+            if event_name == "AUDIO_ENDED":
+                if st.session_state.status == "speaking":
+                    if st.session_state.get("pending_handoff"):
+                        st.session_state.status = "handoff"
+                        st.session_state.pending_handoff = False
+                    else:
+                        st.session_state.status = "listening"
+                    st.session_state.component_key += 1
+                    st.rerun()
+
+            elif event_name == "mic_start":
                 if st.session_state.status != "listening":
                     st.session_state.status = "listening"
                     st.session_state.audio_to_play = None
@@ -1030,5 +1042,3 @@ else:
                 st.session_state.audio_to_play = None
                 st.session_state.component_key += 1
                 st.rerun()
-
-

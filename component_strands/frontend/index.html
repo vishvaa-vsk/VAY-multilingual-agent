@@ -1043,6 +1043,8 @@
     });
 
     let prevAudioData = null;
+    let micSourceNode = null;
+    let ttsSourceNode = null;
 
     function hexToRgb(hex) {
       const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -1088,14 +1090,15 @@
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
         // Wire up visualizer (disconnect first to prevent echo bugs)
+        if (micSourceNode) micSourceNode.disconnect();
         analyserNode.disconnect();
-        const sourceNode = audioContext.createMediaStreamSource(micStream);
-        sourceNode.connect(analyserNode);
+        micSourceNode = audioContext.createMediaStreamSource(micStream);
+        micSourceNode.connect(analyserNode);
 
         // Initialize and start Silero VAD
         myvad = await vad.MicVAD.new({
           stream: micStream,
-          redemptionFrames: 100,      // Wait ~3 seconds of silence before cutting off (gives time to think!)
+          redemptionFrames: 25,       // Wait ~750ms of silence before cutting off (reduced from 3s for fast response)
           positiveSpeechThreshold: 0.8, // Stricter threshold to ignore background noise
           onSpeechStart: () => {
             console.log("Silero VAD: Speech start detected");
@@ -1188,8 +1191,8 @@
             
             try {
               analyserNode.disconnect();
-              const sourceNode = audioContext.createMediaStreamSource(micStream);
-              sourceNode.connect(analyserNode);
+              if (ttsSourceNode) { ttsSourceNode.disconnect(); ttsSourceNode = null; }
+              if (micSourceNode) { micSourceNode.connect(analyserNode); }
             } catch (e) {}
 
             myvad.start();
@@ -1204,9 +1207,16 @@
         // Wire up audio player through analyser node for WebGL visualizer reactivity
         // We do this after play() resolves to avoid autoplay DOM exceptions
         try {
-          analyserNode.disconnect(); // Disconnect from mic or previous playbacks
-          const sourceNode = audioContext.createMediaElementSource(audio);
-          sourceNode.connect(analyserNode);
+          if (micSourceNode) micSourceNode.disconnect(); // Prevent mic from routing to speakers!
+          analyserNode.disconnect(); // Disconnect from previous playbacks
+          if (ttsSourceNode) { ttsSourceNode.disconnect(); }
+          
+          // Fix: Some browsers only allow creating MediaElementSource once per element
+          if (!audio.mediaElementSourceCreated) {
+              ttsSourceNode = audioContext.createMediaElementSource(audio);
+              audio.mediaElementSourceCreated = true;
+          }
+          ttsSourceNode.connect(analyserNode);
           analyserNode.connect(audioContext.destination);
         } catch (err) {
           console.warn("Could not wire audio to visualizer (already connected?)", err);

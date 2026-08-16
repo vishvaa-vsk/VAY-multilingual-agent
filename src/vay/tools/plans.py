@@ -62,14 +62,23 @@ def build_plans_tools(session: SessionContext) -> list:
         else:
             rows = conn.execute("SELECT * FROM plans").fetchall()
 
-        return (
-            "\n".join(
-                f"{r['plan_id']}: {r['plan_name']} — Rs {r['price']}/{r['validity_days']}d, "
-                f"data={r['data_limit']}, voice={r['voice_minutes']}, sms={r['sms']}"
-                for r in rows
-            )
-            or "No plans found."
+        plan_list = "\n".join(
+            f"{r['plan_id']}: {r['plan_name']} — Rs {r['price']}/{r['validity_days']}d, "
+            f"data={r['data_limit']}, voice={r['voice_minutes']}, sms={r['sms']}"
+            for r in rows
         )
+        if not rows:
+            return "No plans found."
+        
+        # If the LLM pulled a large list, explicitly instruct it NOT to read the whole thing
+        if len(rows) > 3:
+            return (
+                f"[SYSTEM INSTRUCTION: Here are {len(rows)} plans. DO NOT read this entire list out loud to the customer. "
+                "Pick exactly 2 or 3 of the most relevant plans from this list, present them briefly, "
+                "and ask the customer which one they are interested in.]\n\n"
+            ) + plan_list
+            
+        return plan_list
 
     @tool
     def comparePlans(plan_ids: list[str]) -> str:
