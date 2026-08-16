@@ -16,10 +16,22 @@ import streamlit as st
 import time
 import json
 import os
+os.environ["STREAMLIT_UI"] = "1"
 from audio_handler import decode_audio, encode_audio_bytes
 from component_strands import strands_component
 from component_galaxy import galaxy_component
 from component_aurora import aurora_component
+
+import io
+import soundfile as sf
+import torch
+from langchain_core.messages import AIMessage, HumanMessage
+
+from vay.asr.router import ASRRouter
+from vay.graph.state import GraphState
+from vay.graph.workflow import build_graph
+from vay.tools.session import SessionContext
+from vay.graph.utils import trim_history
 
 # Ensure page config is set first
 st.set_page_config(
@@ -265,30 +277,34 @@ if "component_key" not in st.session_state:
 # ----------------- HELPER FUNCTIONS -----------------
 def generate_text_to_speech(text, lang_code="en"):
     """
-    Generates a TTS audio response using gTTS (or mocks if offline)
+    Generates a TTS audio response using Microsoft Edge Neural voices (edge-tts).
     """
-    if not HAS_GTTS:
-        # Return a silent / mock response byte array
-        return b""
+    import tempfile
+    import os
+    from vay.tts.engine import speak
     
-    # Map input ISO lang_codes to gtts options
-    gtts_lang = "en"
-    if lang_code == "ta":
-        gtts_lang = "ta"
-    elif lang_code == "hi":
-        gtts_lang = "hi"
-        
-    try:
-        tts = gTTS(text=text, lang=gtts_lang, slow=False)
-        # Write to memory file
-        from io import BytesIO
-        fp = BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        return fp.read()
-    except Exception as e:
-        st.sidebar.error(f"TTS Generation Error: {e}")
+    if not text:
         return b""
+        
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    
+    try:
+        # Call the project's edge-tts wrapper (play=False because UI plays it)
+        speak(text, lang=lang_code, play=False, output_path=tmp_path)
+        
+        # Read the generated MP3 bytes
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"TTS generation error: {e}")
+        return b""
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
 
 def query_hybrid_rag(query_text):
     """
@@ -320,112 +336,157 @@ def query_hybrid_rag(query_text):
         
     return best_doc, best_score
 
-def run_multilingual_pipeline(user_query, detected_lang="en"):
-    """
-    Executes the logical pipeline defined in project_context.md
-    """
-    # 1. State: Thinking (ASR complete, now normalizing/cleanup)
-    time.sleep(0.5) # Simulate small latency
-    
-    # Normalize transcription (simulate LLM-based code-switch normalization)
-    normalized_query = user_query
-    # Simple mockup cleanup for Tanglish/Hinglish
-    if detected_lang == "ta" and "bill" in user_query.lower():
-        normalized_query = "எனது பில் விவரங்கள் என்ன?"
-    elif detected_lang == "hi" and "bill" in user_query.lower():
-        normalized_query = "मेरा बिल का विवरण क्या है?"
-        
-    # 2. Intent + Entity classification
-    intent = "General Query"
-    entities = {}
-    
-    query_lower = user_query.lower()
-    if any(k in query_lower for k in ["close", "cancel", "terminate", "deactivate", "delete", "மூடு", "बंद"]):
-        intent = "Restricted: Connection Termination"
-        action = "ESCALATE (Sensitive Intent)"
-    elif any(k in query_lower for k in ["bill", "charge", "dispute", "pay", "பில்", "बिल"]):
-        intent = "Billing Inquiry"
-        action = "RAG Search"
-    elif any(k in query_lower for k in ["plan", "unlimited", "roaming", "5g", "pack", "திட்டம்", "प्लान"]):
-        intent = "Plan Upgrade / Inquiry"
-        action = "RAG Search"
-    else:
-        intent = "General Help"
-        action = "RAG Search"
-        
-    # Route sensitive intents directly to human handoff (Gotcha §8)
-    if intent.startswith("Restricted"):
-        st.session_state.current_pipeline_data = {
-            "language": "Tamil" if detected_lang == "ta" else ("Hindi" if detected_lang == "hi" else "English"),
-            "route": "IndicConformer" if detected_lang in ["ta", "hi"] else "Whisper-v3-turbo",
-            "intent": intent,
-            "confidence": 0.99,
-            "raw_text": user_query,
-            "clean_text": normalized_query,
-            "action": "Escalate to Human Agent",
-            "entities": entities
-        }
-        escalate_session("Sensitive billing/account cancellation requested.")
-        return
-        
-    # 3. RAG Module: Query Operator Knowledge Base
-    best_doc, score = query_hybrid_rag(normalized_query)
-    
-    st.session_state.current_pipeline_data = {
-        "language": "Tamil" if detected_lang == "ta" else ("Hindi" if detected_lang == "hi" else "English"),
-        "route": "IndicConformer" if detected_lang in ["ta", "hi"] else "Whisper-v3-turbo",
-        "intent": intent,
-        "confidence": score,
-        "raw_text": user_query,
-        "clean_text": normalized_query,
-        "action": "RAG Retrieval",
-        "entities": entities
-    }
-    
-    # 4. Handoff check (Threshold τ ≈ 0.75 check)
-    retrieval_threshold = 0.65 # Empirically relaxed for mock keywords
-    if score < retrieval_threshold or best_doc is None:
-        escalate_session(f"Low retrieval confidence ({score} < {retrieval_threshold})")
-        return
-        
-    # 5. LLM Response Generation (grounded in retrieved context, in user's language)
-    response_text = ""
-    if detected_lang == "ta":
-        if best_doc["id"] == "KB001":
-            response_text = "சூப்பர் 5ஜி அன்லிமிட்டெட் திட்டம் மாதத்திற்கு 599 ரூபாய். இதில் அன்லிமிட்டெட் 5ஜி டேட்டா மற்றும் டிஸ்னி+ ஹாட்ஸ்டார் சந்தா உள்ளது."
-        elif best_doc["id"] == "KB002":
-            response_text = "சர்வதேச ரோமிங் திட்டம் 1499 ரூபாய் ஆகும். இது 28 நாட்களுக்கு செல்லுபடியாகும்."
-        else:
-            response_text = "உங்கள் பில் கட்டண முறையீடு 15 நாட்களுக்குள் பதிவு செய்யப்பட வேண்டும். கூடுதல் விவரங்களுக்கு எங்கள் ஏஜெண்டை தொடர்பு கொள்ளவும்."
-    elif detected_lang == "hi":
-        if best_doc["id"] == "KB001":
-            response_text = "सुपर 5G अनलिमिटेड प्लान की कीमत 599 रुपये प्रति माह है। इसमें अनलिमिटेड 5G डेटा और डिज़नी+ हॉटस्टार शामिल है।"
-        elif best_doc["id"] == "KB002":
-            response_text = "इंटरनेशनल रोमिंग पैक की कीमत 1499 रुपये है। यह 28 दिनों के लिए वैध है."
-        else:
-            response_text = "आपके बिल विवाद को 15 दिनों के भीतर दर्ज किया जाना चाहिए। 3 दिनों की अतिरिक्त छूट अवधि मिलती है।"
-    else: # English
-        if best_doc["id"] == "KB001":
-            response_text = "The Super 5G Unlimited Plan costs 599 rupees per month and includes unlimited 5G data plus Disney+ Hotstar."
-        elif best_doc["id"] == "KB002":
-            response_text = "The International Roaming Pack costs 1499 rupees, is valid for 28 days, and has 5GB roaming data."
-        else:
-            response_text = "Invoice disputes must be registered within 15 days. We provide a 3-day payment grace period."
+@st.cache_resource
+def get_asr_router():
+    return ASRRouter()
 
-    # Record history
-    st.session_state.chat_history.append({"speaker": "user", "text": user_query, "lang": detected_lang})
-    st.session_state.chat_history.append({"speaker": "assistant", "text": response_text, "lang": detected_lang})
+@st.cache_resource
+def get_agent_graph():
+    return build_graph()
+
+# ----------------- BACKGROUND MODEL PRELOADING -----------------
+if "models_preloading" not in st.session_state:
+    st.session_state.models_preloading = True
     
-    # 6. Generate TTS Response Audio
-    tts_bytes = generate_text_to_speech(response_text, lang_code=detected_lang)
-    
-    if tts_bytes:
-        st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
-        st.session_state.status = "speaking"
-    else:
-        st.session_state.status = "idle"
+    import threading
+    import subprocess
+    def preload_models():
+        print("[Background Preload] Starting to load ASRRouter and LangGraph...")
+        get_asr_router()
+        get_agent_graph()
+        print("[Background Preload] Finished loading models!")
         
-    st.rerun()
+        # Seed customer database if needed
+        print("[Background Preload] Ensuring customer DB is seeded...")
+        try:
+            from vay.tools.db_queries import init_db
+            init_db()
+            print("[Background Preload] Customer DB ready!")
+        except Exception as e:
+            print(f"[Background Preload] DB seed error: {e}")
+        
+        print("[Background Preload] Triggering KB build in background...")
+        try:
+            subprocess.Popen(["uv", "run", "python", "scripts/build_kb.py"])
+        except Exception as e:
+            print(f"[Background Preload] Error starting KB build: {e}")
+            
+    threading.Thread(target=preload_models, daemon=True).start()
+
+def process_real_audio(base64_audio):
+    """
+    Decodes the browser's audio, runs it through ASRRouter -> LangGraph -> TTS.
+    """
+    print(f"\n--- [process_real_audio] Started! Base64 string length: {len(base64_audio)} ---")
+    try:
+        # 1. Decode base64 to WAV tensor
+        wav_bytes = decode_audio(base64_audio)
+        wav_io = io.BytesIO(wav_bytes)
+        audio_np, sr = sf.read(wav_io)
+        
+        if len(audio_np.shape) > 1:
+            audio_np = audio_np.mean(axis=1)
+        tensor_chunk = torch.from_numpy(audio_np).float()
+        
+        # 2. Route and Transcribe (ASR)
+        t_asr_start = time.time()
+        router = get_asr_router()
+        asr_result = router.route_and_transcribe(tensor_chunk)
+            
+        user_text = asr_result.raw_text
+        detected_lang = asr_result.detected_language
+        t_asr_end = time.time()
+        
+        print(f"[process_real_audio] STT: '{user_text}' (lang: {detected_lang}) [Took {t_asr_end - t_asr_start:.2f}s]")
+        
+        if not user_text.strip():
+            st.session_state.status = "idle"
+            st.rerun()
+            return
+            
+        # 3. LangGraph Orchestrator (RAG + Agent)
+        t_graph_start = time.time()
+        graph = get_agent_graph()
+        
+        # Ensure session exists
+        if "agent_session" not in st.session_state:
+            st.session_state.agent_session = SessionContext(
+                phone_number=st.session_state.phone_number,
+                verified=True,
+                language=detected_lang
+            )
+        if "agent_history" not in st.session_state:
+            st.session_state.agent_history = []
+            
+        st.session_state.agent_session.language = detected_lang
+            
+        state: GraphState = {
+            "phone_number": st.session_state.phone_number,
+            "language": detected_lang,
+            "transcript": user_text,
+            "conversation_history": st.session_state.agent_history,
+            "show_debug": False,
+            "min_similarity": 0.3,
+            "session": st.session_state.agent_session,
+        }
+        
+        print("[process_real_audio] Invoking LangGraph...")
+        result_state = graph.invoke(state)
+        t_graph_end = time.time()
+        
+        # Extract reply
+        reply = result_state.get("final_reply") or "Transferring you to an agent."
+        print(f"[process_real_audio] Agent Reply: {reply} [Took {t_graph_end - t_graph_start:.2f}s]")
+        
+        # 4. Update History
+        st.session_state.agent_history.append(HumanMessage(content=user_text))
+        st.session_state.agent_history.append(AIMessage(content=reply))
+        st.session_state.agent_history = trim_history(st.session_state.agent_history, 6)
+        
+        # 5. Update UI Pipeline Data
+        st.session_state.current_pipeline_data = {
+            "language": detected_lang,
+            "route": asr_result.model_used,
+            "intent": result_state.get("routed_agent", "Orchestrator"),
+            "confidence": round(asr_result.confidence, 2),
+            "raw_text": user_text,
+            "clean_text": user_text,
+            "action": "Handoff" if result_state.get("handoff") else "Completed",
+            "entities": {}
+        }
+        
+        # 6. Chat History UI
+        st.session_state.chat_history.append({"speaker": "user", "text": user_text, "lang": detected_lang})
+        st.session_state.chat_history.append({"speaker": "assistant", "text": reply, "lang": detected_lang})
+        
+        # 7. Check for call termination
+        if result_state.get("call_end_requested") or result_state.get("handoff"):
+            st.session_state.status = "handoff"
+            st.rerun()
+            return
+            
+        # 8. Generate TTS
+        t_tts_start = time.time()
+        print("[process_real_audio] Generating TTS...")
+        tts_bytes = generate_text_to_speech(reply, lang_code=detected_lang)
+        t_tts_end = time.time()
+        print(f"[process_real_audio] TTS Generated [Took {t_tts_end - t_tts_start:.2f}s]")
+        
+        if tts_bytes:
+            st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
+            st.session_state.status = "speaking"
+        else:
+            st.session_state.status = "idle"
+            
+        print("[process_real_audio] Done! Triggering rerun.")
+        st.rerun()
+        
+    except Exception as e:
+        print(f"[process_real_audio] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        st.session_state.status = "idle"
+        st.rerun()
 
 def escalate_session(reason):
     """
@@ -717,13 +778,13 @@ else:
 
             elif event_name == "audio_recorded":
                 st.session_state.status = "thinking"
-                import random
-                simulated_query = random.choice(current_accent_data["queries"])
-                run_multilingual_pipeline(simulated_query, detected_lang=current_accent_data["lang"])
+                base64_audio = event_data.get("audio")
+                if base64_audio:
+                    process_real_audio(base64_audio)
 
             elif event_name == "audio_finished":
-                if st.session_state.status != "idle":
-                    st.session_state.status = "idle"
+                if st.session_state.status != "listening":
+                    st.session_state.status = "listening"
                     st.session_state.audio_to_play = None
                     st.rerun()
 

@@ -8,6 +8,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Silero VAD WebAssembly dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.18/dist/bundle.min.js"></script>
+  
   <style>
     :root {
       --bg-dark: rgba(10, 10, 12, 0.95);
@@ -816,9 +821,9 @@
         }
         const avg = sum / dataArray.length;
 
-        // Very subtle reactivity — strands breathe gently, never jolt
-        targetAmpMod   = Math.min((avg / 255) * 0.3, 0.25);  // max +0.25 amplitude
-        targetSpeedMod = Math.min((avg / 255) * 0.15, 0.12); // max +0.12 speed
+        // Update strands reactivity based on audio volume
+        targetAmpMod   = Math.min((avg / 255) * 0.3, 0.25);
+        targetSpeedMod = Math.min((avg / 255) * 0.15, 0.12);
       } else {
         targetAmpMod   = 0;
         targetSpeedMod = 0;
@@ -872,106 +877,110 @@
       sendFrameHeight();
     }
 
+    // Preload ONNX weights silently on startup without mic prompt
+    async function preloadVAD() {
+      try {
+        console.log("Preloading Silero VAD weights...");
+        await fetch("https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.18/dist/silero_vad.onnx");
+        console.log("VAD weights preloaded!");
+      } catch (e) {
+        console.warn("Failed to preload VAD", e);
+      }
+    }
+    preloadVAD();
+
+    let myvad = null;
+
     // Audio Capture and WAV Encoder Logic
-    function startAudioRecording() {
+    async function startAudioRecording() {
       if (isRecording) return;
-
       initAudioContext();
+      
+      isRecording = true;
+      config.status = 'listening';
+      updateUIState('listening');
+      sendMessageToStreamlit({ event: "mic_start" });
 
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(stream => {
-          micStream = stream;
-          isRecording = true;
-          recordedChunks = [];
-          recordingLength = 0;
+      try {
+        // We get our own stream so we can route it to the visualizer AND the VAD
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        // Wire up visualizer (disconnect first to prevent echo bugs)
+        analyserNode.disconnect();
+        const sourceNode = audioContext.createMediaStreamSource(micStream);
+        sourceNode.connect(analyserNode);
 
-          const sourceNode = audioContext.createMediaStreamSource(stream);
-          sourceNode.connect(analyserNode);
-
-          // We use script processor for direct simple floating point manipulation
-          micProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-
-          micProcessor.onaudioprocess = function (e) {
-            if (!isRecording) return;
-            const inputData = e.inputBuffer.getChannelData(0);
-
-            // Push clone to buffer
-            recordedChunks.push(new Float32Array(inputData));
-            recordingLength += inputData.length;
-          };
-
-          sourceNode.connect(micProcessor);
-          micProcessor.connect(audioContext.destination);
-
-          // Send listening state update to Streamlit
-          config.status = 'listening';
-          updateUIState('listening');
-          sendMessageToStreamlit({ event: "mic_start" });
-        })
-        .catch(err => {
-          console.error("Mic access denied or error:", err);
-          config.status = 'idle';
-          updateUIState('idle');
+        // Initialize and start Silero VAD
+        myvad = await vad.MicVAD.new({
+          stream: micStream,
+          redemptionFrames: 100,      // Wait ~3 seconds of silence before cutting off (gives time to think!)
+          positiveSpeechThreshold: 0.8, // Stricter threshold to ignore background noise
+          onSpeechStart: () => {
+            console.log("Silero VAD: Speech start detected");
+          },
+          onSpeechEnd: (audioFloat32Array) => {
+            console.log("Silero VAD: Speech end detected");
+            
+            if (!isRecording) return; // Prevent double firing
+            
+            // We do NOT set isRecording to false, so the session stays active
+            // Instead, we just temporarily pause the VAD so it doesn't pick up the AI's response
+            myvad.pause();
+            
+            // audioFloat32Array is exactly the speech segment! Encode it to WAV.
+            const wavBlob = encodeWAV(audioFloat32Array);
+            
+            const reader = new FileReader();
+            reader.onloadend = function () {
+              const base64Audio = reader.result.split(',')[1];
+              sendMessageToStreamlit({
+                event: "audio_recorded",
+                audio: base64Audio
+              });
+              config.status = 'thinking';
+              updateUIState('thinking');
+            };
+            reader.readAsDataURL(wavBlob);
+          },
+          onVADMisfire: () => {
+            console.log("Silero VAD: Misfire (audio too short)");
+          }
         });
+        
+        myvad.start();
+        
+      } catch (err) {
+        console.error("Mic access denied or VAD error:", err);
+        isRecording = false;
+        config.status = 'idle';
+        updateUIState('idle');
+      }
+    }
+
+    function cleanupRecording() {
+      if (myvad) {
+        try { myvad.destroy(); } catch (e) { }
+        myvad = null;
+      }
+      if (micStream) {
+        try { micStream.getTracks().forEach(track => track.stop()); } catch (e) { }
+        micStream = null;
+      }
     }
 
     function pauseAudioRecording() {
-      if (isRecording) {
-        isRecording = false;
-
-        // Stop track stream safely
-        if (micStream) {
-          try {
-            micStream.getTracks().forEach(track => track.stop());
-          } catch (e) { }
-          micStream = null;
-        }
-        if (micProcessor) {
-          try {
-            micProcessor.disconnect();
-          } catch (e) { }
-          micProcessor = null;
-        }
-      }
-
-      // Update UI state to idle / paused and inform Streamlit
+      if (!isRecording) return;
+      isRecording = false;
+      cleanupRecording();
+      
       config.status = 'idle';
       updateUIState('idle');
       sendMessageToStreamlit({ event: "mic_pause" });
     }
 
     function stopAudioRecording() {
-      if (!isRecording) return;
-      isRecording = false;
-
-      // Stop track stream
-      if (micStream) {
-        try {
-          micStream.getTracks().forEach(track => track.stop());
-        } catch (e) { }
-        micStream = null;
-      }
-      if (micProcessor) {
-        try {
-          micProcessor.disconnect();
-        } catch (e) { }
-        micProcessor = null;
-      }
-
-      // Convert buffer chunks to single Float32Array
-      const mergedSamples = mergeBuffers(recordedChunks, recordingLength);
-      const wavBlob = encodeWAV(mergedSamples);
-
-      // Convert to base64 and send to Streamlit
-      const reader = new FileReader();
-      reader.onloadend = function () {
-        const base64Audio = reader.result.split(',')[1];
-        sendMessageToStreamlit({
-          event: "audio_recorded",
-          audio: base64Audio
-        });
-      };
-      reader.readAsDataURL(wavBlob);
+      // Manual stop bypasses VAD, but Silero handles everything automatically now
+      pauseAudioRecording();
     }
 
     // Audio Playback
@@ -980,44 +989,52 @@
 
       initAudioContext();
 
+      // Create an HTML5 Audio element which natively supports MP3 decoding
+      const audio = new Audio("data:audio/mp3;base64," + base64Data);
+      
       // Stop active playing source if any
       if (activeAudioSource) {
-        try {
-          activeAudioSource.stop();
-        } catch (e) { }
+        try { activeAudioSource.pause(); } catch (e) { }
       }
+      activeAudioSource = audio;
 
-      const binaryStr = window.atob(base64Data);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
+      audio.onended = () => {
+        if (myvad && isRecording) {
+            // Auto-resume listening for continuous conversation
+            config.status = 'listening';
+            updateUIState('listening');
+            
+            try {
+              analyserNode.disconnect();
+              const sourceNode = audioContext.createMediaStreamSource(micStream);
+              sourceNode.connect(analyserNode);
+            } catch (e) {}
 
-      // Decode WAV and play it
-      audioContext.decodeAudioData(bytes.buffer)
-        .then(decodedBuffer => {
-          const sourceNode = audioContext.createBufferSource();
-          sourceNode.buffer = decodedBuffer;
-
-          // Wire up audio player through analyser node for WebGL visualizer reactivity
-          sourceNode.connect(analyserNode);
-          analyserNode.connect(audioContext.destination);
-
-          sourceNode.onended = () => {
+            myvad.start();
+        } else {
             config.status = 'idle';
             updateUIState('idle');
-            sendMessageToStreamlit({ event: "audio_finished" });
-          };
+        }
+        sendMessageToStreamlit({ event: "audio_finished" });
+      };
 
-          sourceNode.start(0);
-          activeAudioSource = sourceNode;
-        })
-        .catch(err => {
-          console.error("Audio playback error:", err);
-          config.status = 'idle';
-          updateUIState('idle');
-          sendMessageToStreamlit({ event: "audio_finished" });
-        });
+      audio.play().then(() => {
+        // Wire up audio player through analyser node for WebGL visualizer reactivity
+        // We do this after play() resolves to avoid autoplay DOM exceptions
+        try {
+          analyserNode.disconnect(); // Disconnect from mic or previous playbacks
+          const sourceNode = audioContext.createMediaElementSource(audio);
+          sourceNode.connect(analyserNode);
+          analyserNode.connect(audioContext.destination);
+        } catch (err) {
+          console.warn("Could not wire audio to visualizer (already connected?)", err);
+        }
+      }).catch(err => {
+        console.error("Audio playback error:", err);
+        config.status = 'idle';
+        updateUIState('idle');
+        sendMessageToStreamlit({ event: "audio_finished" });
+      });
     }
 
     function initAudioContext() {

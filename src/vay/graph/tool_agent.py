@@ -231,8 +231,7 @@ def run_tool_agent(
         if not getattr(ai_msg, "tool_calls", None):
             reply = (ai_msg.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
             reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
-            if show_debug:
-                print(f"  [LLM final reply] {reply}")
+            print(f"  [SubAgent] Final reply (len={len(reply)}): {reply[:200]}")
             return reply
 
         if show_debug and (ai_msg.content or "").strip():
@@ -264,8 +263,7 @@ def run_tool_agent(
                         result = tool_fn.invoke(call["args"])
                     except Exception as e:
                         result = f"Tool error: {e}"
-                if show_debug:
-                    print(f"  [tool call] {call['name']}({call['args']}) -> {str(result)[:200]}")
+                print(f"  [SubAgent tool] {call['name']}({call['args']}) -> {str(result)[:300]}")
 
             # STOP_AND_SAY: sentinel (see tools.changePlan) -- a sensitive action just staged
             # a pending confirmation. Return its consent script VERBATIM as the final reply
