@@ -34,6 +34,7 @@ from vay.tools.session import SessionContext, confirm_pending_action
 
 from vay.graph.state import GraphState
 from vay.graph.utils import (
+    ABUSIVE_LANGUAGE_PATTERN,
     AFFIRMATION_PATTERN,
     AGENT_NAMES,
     AGGRESSIVE_WARNING_TEMPLATES,
@@ -102,11 +103,14 @@ def _fetch_account_context(phone_number: str) -> str:
         ).fetchone()
         outstanding = balance_row["total"] if balance_row and balance_row["total"] else 0.0
 
-        # Open tickets
+        # Recent tickets (open AND recently resolved/closed -- a customer asking "is my
+        # issue fixed" is asking specifically about a RESOLVED ticket, which the old
+        # `status NOT IN ('resolved','closed')` filter excluded entirely, making that
+        # question unanswerable from account context no matter which sub-agent handled
+        # it). Limit 3 keeps this cheap and recent.
         tickets = conn.execute(
-            "SELECT ticket_id, category, status FROM tickets "
-            "WHERE phone_number=? AND status NOT IN ('resolved','closed') "
-            "ORDER BY created_at DESC LIMIT 3",
+            "SELECT ticket_id, category, status, resolution_notes FROM tickets "
+            "WHERE phone_number=? ORDER BY created_at DESC LIMIT 3",
             (phone_number,),
         ).fetchall()
 
@@ -132,10 +136,15 @@ def _fetch_account_context(phone_number: str) -> str:
         )
 
         if tickets:
-            ticket_strs = [f"{t['ticket_id']} ({t['category']}: {t['status']})" for t in tickets]
-            lines.append(f"Open Tickets: {', '.join(ticket_strs)}")
+            ticket_strs = [
+                f"{t['ticket_id']} ({t['category']}: {t['status']}"
+                + (f" — {t['resolution_notes']}" if t["resolution_notes"] else "")
+                + ")"
+                for t in tickets
+            ]
+            lines.append(f"Recent Tickets: {', '.join(ticket_strs)}")
         else:
-            lines.append("Open Tickets: None")
+            lines.append("Recent Tickets: None")
 
         lines.append("--- End Account Context ---")
         return "\n".join(lines)
@@ -190,14 +199,20 @@ def orchestrator_node(state: GraphState) -> GraphState:
             "call_end_requested": False,
         }
 
-    route = parsed.get("route") if parsed.get("route") in VALID_ROUTES else "unclear"
+    route = parsed.get("route") if parsed.get("route") in (VALID_ROUTES | {"chitchat"}) else "unclear"
     confidence = (
         float(parsed.get("confidence", 0.0))
         if isinstance(parsed.get("confidence"), (int, float))
         else 0.0
     )
     sensitive = bool(parsed.get("sensitive", False))
-    aggressive = bool(parsed.get("aggressive", False))
+    # Deterministic second gate -- see ABUSIVE_LANGUAGE_PATTERN's comment in core_utils.py.
+    # The LLM's aggressive=true alone is not trusted for this consequential a decision
+    # (it can escalate to actually cutting the customer's call); it must also match a
+    # recognizable profanity/threat term in the raw transcript.
+    aggressive = bool(parsed.get("aggressive", False)) and bool(
+        ABUSIVE_LANGUAGE_PATTERN.search(state["transcript"])
+    )
     detected_lang = parsed.get("language") or state["language"]
 
     # --- Pending-action overrides routing back to the owning sub-agent ---
@@ -212,10 +227,17 @@ def orchestrator_node(state: GraphState) -> GraphState:
     # --- Aggressive / abusive caller handling ---
     # This is SEPARATE from sensitive: aggressive callers get a warning first,
     # then a call-cut — NOT a handoff to a human agent.
+    # BUGFIX: this used to read the running count from `state.get("aggressive_count", 0)`.
+    # scripts/run_assistant.py builds a FRESH GraphState dict every turn and never threads
+    # the previous graph.invoke() result back in -- only `session` actually survives across
+    # turns -- so that count was silently stuck at 0 every single turn, meaning a caller
+    # could swear on every turn of an entire call and NEVER reach the 2nd-offence call-cut
+    # (see rag-tts-evaluvation.md). Now reads/writes session.aggressive_count, the same
+    # pattern session.consecutive_unclear already used correctly.
     warning_reply = ""
     cut_call = False
     if aggressive and not forced_by_pending_action:
-        current_agg_count = state.get("aggressive_count", 0) + 1
+        current_agg_count = (session.aggressive_count if session else state.get("aggressive_count", 0)) + 1
         if session:
             session.aggressive_count = current_agg_count
         if current_agg_count == 1:
@@ -226,11 +248,14 @@ def orchestrator_node(state: GraphState) -> GraphState:
             warning_reply = localized(CALL_CUT_TEMPLATES, detected_lang)
             cut_call = True
     else:
-        current_agg_count = state.get("aggressive_count", 0)
+        current_agg_count = session.aggressive_count if session else state.get("aggressive_count", 0)
 
     # --- Unclear / low-confidence escalation tracking ---
+    # "chitchat" (thanks/ok/greetings) is a route the orchestrator understood
+    # perfectly -- it must NOT count toward the unclear-escalation counter, or two
+    # "thank you"s in a row could get a customer wrongly bounced to a human agent.
     unclear_escalate = False
-    is_unclear = route == "unclear" or confidence < DEFAULT_NLU_CONFIDENCE
+    is_unclear = route not in ("chitchat",) and (route == "unclear" or confidence < DEFAULT_NLU_CONFIDENCE)
     normalized_q = parsed.get("normalized_query", "")
     explicit_human_request = bool(
         HUMAN_REQUEST_PATTERNS.search(state["transcript"]) or
@@ -263,6 +288,11 @@ def orchestrator_node(state: GraphState) -> GraphState:
         print("  [Orchestrator JSON]")
         print(" ", json.dumps(parsed, indent=2, ensure_ascii=False).replace("\n", "\n  "))
 
+    # Persist this turn's route on the session so NEXT turn's previous_route (computed above,
+    # before this line runs) is correct -- must happen after previous_route is read, not before.
+    if session:
+        session.last_route = route
+
     return {
         "intent": parsed.get("intent", "unclear"),
         "entities": parsed.get("entities") or {},
@@ -277,8 +307,12 @@ def orchestrator_node(state: GraphState) -> GraphState:
         # Aggressive tracking
         "aggressive_count": current_agg_count,
         "warning_reply": warning_reply,
-        # Remember previous route for domain-switch history trimming in _run_subagent
-        "previous_route": state.get("route", ""),
+        # Remember previous route for domain-switch history trimming in _run_subagent.
+        # BUGFIX: same root cause as aggressive_count above -- state.get("route", "") was
+        # always "" (state is rebuilt fresh every turn), so this was always "", which meant
+        # domain_switched in _run_subagent was always False and the Aug-14 history-trimming
+        # "fix" never actually fired in the real CLI loop. Now sourced from session.last_route.
+        "previous_route": session.last_route if session else state.get("route", ""),
     }
 
 

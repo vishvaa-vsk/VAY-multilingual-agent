@@ -43,7 +43,7 @@ import vay.tools.db_queries as customer_db
 
 from langchain_core.tools import tool
 
-from vay.tools.session import SENSITIVE_DENIAL, SessionContext
+from vay.tools.session import SENSITIVE_DENIAL, SessionContext, _row_to_dict, build_escalate_tool
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +173,14 @@ def build_billing_tools(session: SessionContext) -> list:
             return f"'{charge_name}' was not found as a line item on the latest bill."
         return "; ".join(f"{k.replace('_', ' ')}: Rs {v}" for k, v in matches.items() if v)
 
-    return [getBalance, getBillBreakup, getDueDate, sendPaymentLink, explainCharge]
+    return [
+        getBalance,
+        getBillBreakup,
+        getDueDate,
+        sendPaymentLink,
+        explainCharge,
+        build_escalate_tool(session),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -110,6 +110,16 @@ def chunk_markdown(
         return []
 
     # --- Step 3: Greedy pack sentences into chunks (FIX 7 — size-safe) ---
+    # FIX 8: don't let packing silently blend two DIFFERENT sections/tables into one
+    # chunk just because they fit under chunk_size together -- this was diluting the
+    # embedding of small-but-important sections (e.g. a pricing table getting glued to
+    # an unrelated intro paragraph or the next section's table), which measurably hurt
+    # retrieval precision for exact-match queries (see rag-tts-evaluuation.md). Once the
+    # heading changes AND the current chunk already has some real content, force a new
+    # chunk -- but still allow tiny fragments (e.g. a heading-only block with no body
+    # sentences yet) to merge forward so we don't produce a flood of near-empty chunks.
+    HEADING_SPLIT_MIN_CHARS = 120
+
     chunks: list[tuple[str, str]] = []
     cur_sents: list[str] = []
     cur_heading = ""
@@ -121,8 +131,11 @@ def chunk_markdown(
 
     for sent, hdg in zip(all_sentences, sentence_headings):
         addition = len(sent) + (1 if cur_sents else 0)  # +1 for space
+        starts_new_section = (
+            bool(cur_sents) and hdg != cur_heading and cur_len >= HEADING_SPLIT_MIN_CHARS
+        )
 
-        if cur_len + addition <= chunk_size:
+        if not starts_new_section and cur_len + addition <= chunk_size:
             cur_sents.append(sent)
             cur_len += addition
             if not cur_heading:

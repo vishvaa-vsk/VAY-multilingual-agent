@@ -31,6 +31,7 @@ auto-discovered from the content (default) or supplied by the caller via
 
 from __future__ import annotations
 
+from vay.rag.hybrid import hybrid_query
 from vay.rag.vector_store import COLLECTION_NAME as _DEFAULT_COLLECTION
 from vay.rag.vector_store import get_collection
 
@@ -77,8 +78,12 @@ def read(
     fetch_n = n_results * 4 if category_filter else n_results
     fetch_n = max(fetch_n, n_results)
 
-    results = collection.query(
-        query_texts=[query],
+    # Hybrid BM25 (keyword) + vector search, fused and reranked -- see rag/hybrid.py
+    # for why this replaced a plain collection.query() (pure vector search was silently
+    # standing in for "hybrid retrieval" despite that being documented/expected).
+    results = hybrid_query(
+        collection,
+        query,
         n_results=min(fetch_n, collection.count() or 1),
         where=where,
     )

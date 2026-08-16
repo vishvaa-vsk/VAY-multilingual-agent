@@ -33,6 +33,7 @@ Create `.env` in the project root:
 ```env
 GROQ_API_KEY="your_groq_api_key"
 GROQ_MODEL=openai/gpt-oss-20b
+or llama-3.1-8b-instant
 ```
 
 ### 4. Initialize Database

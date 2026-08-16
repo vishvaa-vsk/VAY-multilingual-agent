@@ -111,6 +111,7 @@ CLARIFY_TEMPLATES = {
 from vay.graph.nodes.agents import billing_node, complaints_node, coverage_node, plans_node
 from vay.graph.nodes.orchestrator import orchestrator_node
 from vay.graph.nodes.utils import (
+    chitchat_node,
     clarify_node,
     closing_node,
     guardrail_node,
@@ -134,6 +135,7 @@ def build_graph():
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("human_handoff", human_handoff_node)
     graph.add_node("warning", warning_node)  # aggressive caller 1st offence
+    graph.add_node("chitchat", chitchat_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("closing", closing_node)
     graph.add_node("tts", tts_node)
@@ -149,6 +151,7 @@ def build_graph():
             "coverage": "coverage",
             "human_handoff": "human_handoff",
             "warning": "warning",
+            "chitchat": "chitchat",
             "clarify": "clarify",
             "closing": "closing",
         },
@@ -168,6 +171,7 @@ def build_graph():
 
     graph.add_edge("human_handoff", "tts")
     graph.add_edge("warning", "tts")  # warning message goes to TTS then END
+    graph.add_edge("chitchat", "tts")
     graph.add_edge("clarify", "tts")
     graph.add_edge("closing", "tts")
     graph.add_edge("tts", END)

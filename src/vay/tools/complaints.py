@@ -41,9 +41,11 @@ import vay.tools.db_queries as customer_db
 from langchain_core.tools import tool
 
 from vay.tools.session import (
+    SLA_DAYS,
     TROUBLESHOOT_FLOWS,
     SessionContext,
     _gen_ticket_id,
+    build_escalate_tool,
 )
 
 
@@ -107,15 +109,12 @@ def build_complaints_tools(session: SessionContext) -> list:
             return f"No standard troubleshooting flow for '{issue_type}'."
         return "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
 
-    @tool
-    def escalateToHuman(reason: str) -> str:
-        """Escalate this call to a human agent, e.g. for anger/frustration, a repeated
-        unresolved issue, or an explicit request for a human."""
-        session.escalation_requested = True
-        session.escalation_reason = reason
-        return f"Escalating to a human agent: {reason}"
-
-    return [createComplaint, getTicketStatus, runTroubleshootFlow, escalateToHuman]
+    return [
+        createComplaint,
+        getTicketStatus,
+        runTroubleshootFlow,
+        build_escalate_tool(session),
+    ]
 
 
 # ---------------------------------------------------------------------------

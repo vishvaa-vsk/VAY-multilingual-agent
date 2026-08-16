@@ -1,7 +1,11 @@
 # VAY — Multilingual GenAI Voice Assistant: Project Context
 
-> **Last updated:** 2026-08-14  
+> **Last updated:** 2026-08-16  
 > **Purpose:** Living reference document for any developer, AI agent, or team member joining this project mid-stream. Covers the full architecture, every file's role, and all changes made during the Aug 12–18 hackathon build window.
+>
+> **See also:** [`rag-tts-evaluvation.md`](rag-tts-evaluvation.md) — the Aug 16 RAG/tool/DB audit
+> (bugs found + fixed, measured retrieval quality before/after, token/cost findings). This file's
+> §13 below is the changelog summary; that file has the full evidence trail.
 
 ---
 
@@ -30,6 +34,7 @@
 10. [Key Design Decisions](#10-key-design-decisions)
 11. [Known Gotchas](#11-known-gotchas)
 12. [How to Run](#12-how-to-run)
+13. [Changes Made — Aug 16 Session (RAG + Complaints Audit)](#13-changes-made--aug-16-session-rag--complaints-audit)
 
 ---
 
@@ -60,7 +65,7 @@ The assistant handles telecom self-service across Tamil, Hindi, English, and 15+
 | **VAD** | Silero / silence threshold | ~600–700ms silence = utterance boundary |
 | **Normalization** | Groq LLM (llama-3.1-8b-instant) | Code-switch cleanup, intent tagging, entity extraction |
 | **Vector DB** | ChromaDB (cosine, HNSW) | 5 scoped collections (billing / plans / complaints / coverage / compliance) |
-| **Keyword search** | BM25 (rank-bm25) | Hybrid retrieval: BM25 + vector, top-k reranked |
+| **Keyword search** | BM25 (rank-bm25) | **[FIXED Aug 16]** Hybrid retrieval: BM25 + vector, fused + top-k reranked. Was previously vector-only — `rag/bm25.py` was a non-functional stub never wired into the query path despite being documented as active; see `rag/hybrid.py` and `rag-tts-evaluvation.md` §2.3. |
 | **Embedding** | `all-MiniLM-L6-v2` (SentenceTransformers) | ChromaDB embedding function |
 | **LLM** | Groq API — `llama-3.1-8b-instant` | Orchestrator + 4 sub-agents + normalization |
 | **Orchestration** | LangGraph (StateGraph) | Conditional branching, multi-turn state |
@@ -97,7 +102,8 @@ VAY-multilingual-agent/
 │   ├── __init__.py
 │   ├── test_types.py             # Pydantic model creation tests
 │   ├── test_routing.py           # ASR tier routing tests (Tamil→Indic, en→Whisper)
-│   └── test_rag.py               # HybridRetriever initialization tests
+│   ├── test_rag.py               # HybridRetriever initialization tests
+│   └── test_tools_smoke.py       # [NEW Aug 16] Every read-only tool invoked against seeded DB
 │
 └── src/
     └── vay/                      # Main Python package
@@ -311,14 +317,15 @@ USER SPEAKS
 |---|---|
 | [`rag/vector_store.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/vector_store.py) | ChromaDB client + collection management. Defines `KB_COLLECTIONS`. Module-level cache prevents re-loading embeddings per call. |
 | [`rag/retriever.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/retriever.py) | **[CHANGED Aug 14]** `RetrievalTracker`, `_format_hits()`, `build_*_rag_tool()` factories (one per KB collection), `HybridRetriever` class. Default collection fixed to `billing_policy`. Confidence threshold: `0.75`. |
+| [`rag/hybrid.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/hybrid.py) | **[NEW Aug 16]** Real BM25 + vector hybrid search, fused/reranked. Cached `BM25Okapi` index per collection (auto-invalidated on chunk-count change). `manager_read.read()` calls this instead of a plain `collection.query()`. |
 | [`rag/manager.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager.py) | Thin facade: `read(query, n_results, collection_name)` |
-| [`rag/manager_read.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager_read.py) | ChromaDB `.query()` execution |
+| [`rag/manager_read.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager_read.py) | **[CHANGED Aug 16]** Now calls `rag/hybrid.py::hybrid_query()` instead of a plain ChromaDB `.query()`. |
 | [`rag/manager_create.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager_create.py) | Collection creation + chunk upsert |
 | [`rag/manager_ingest.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager_ingest.py) | Markdown → chunks → embeddings pipeline |
 | [`rag/manager_admin.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/manager_admin.py) | Delete, stats, list operations |
-| [`rag/bm25.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/bm25.py) | BM25 keyword index |
+| [`rag/bm25.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/bm25.py) | **[FIXED Aug 16]** Was a non-functional stub (ignored the query, returned input-order docs with a fabricated score). Now a real `rank_bm25`-backed engine. The live query path uses `hybrid.py` directly (for caching); this class remains as a standalone BM25 utility. |
 | [`rag/tfidf.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/tfidf.py) | TF-IDF utilities |
-| [`rag/chunking.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/chunking.py) | Text chunking (fixed-size + overlap) |
+| [`rag/chunking.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/chunking.py) | **[FIXED Aug 16]** Section-boundary-aware chunking. Previously greedily packed sentences from DIFFERENT headings/sections into one chunk whenever they fit under `chunk_size` together, silently diluting/burying important chunks (see `rag-tts-evaluvation.md` §2.4). Now flushes on a heading change once the current chunk has ≥120 chars of real content. |
 | [`rag/parsers.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/parsers.py) | Markdown / plain-text parsers |
 | [`rag/categorizer.py`](file:///c:/sample/VAY-multilingual-agent/src/vay/rag/categorizer.py) | Routes ingested docs to the correct scoped collection |
 
@@ -547,13 +554,17 @@ Run: `python -m vay.ui.app`
 
 ```
 tests/
-├── test_types.py      # ASRResult, StructuredTranscript Pydantic model creation
-├── test_routing.py    # Tamil → IndicConformer, English → Whisper routing
-└── test_rag.py        # HybridRetriever initialization and collection binding
+├── test_types.py         # ASRResult, StructuredTranscript Pydantic model creation
+├── test_routing.py       # Tamil → IndicConformer, English → Whisper routing
+├── test_rag.py           # HybridRetriever initialization and collection binding
+└── test_tools_smoke.py   # [NEW Aug 16] Invokes every read-only tool from every sub-agent
+                           # against the seeded DB. Added after getBalance/createComplaint were
+                           # found crashing on every call with an undefined-name error that no
+                           # existing test caught -- see rag-tts-evaluvation.md §2.1/§2.2/§7.
 ```
 
 Run: `uv run pytest tests/ -v`  
-**Current status: 5/5 PASSED** ✅
+**Current status: 11/11 PASSED** ✅
 
 ---
 
@@ -788,6 +799,21 @@ Updated the TOOL-USE RULES to force the LLM to use the `{account_context}` to an
 - **GROQ_API_KEY must be set** — `_llm()` raises `SystemExit` if missing.
 - **ChromaDB collections must be built before first use** — run `scripts/build_kb.py`.
 - **`nexatel_customers.db` must be seeded before tools work** — run `scripts/manage_db.py`.
+- **[FOUND+FIXED Aug 16] `getBalance` and `createComplaint` crashed on every call** (`NameError` on
+  `_row_to_dict` / `SLA_DAYS` — imported nowhere) until this session's fixes. Neither is caught by
+  `uv run pytest` — the suite never actually invokes a tool against the seeded DB. See
+  `rag-tts-evaluvation.md` §7 for the recommended smoke-test gap to close.
+- **Groq daily token quota (TPD) is a real constraint, not theoretical** — this session's own
+  testing exhausted the account's 200,000 tokens/day quota for `openai/gpt-oss-20b` mid-evaluation.
+  Budget for this in any live demo; see `rag-tts-evaluvation.md` §6.
+- **`llama-3.1-8b-instant` can degenerate into a phrase-repetition loop** when generating
+  non-English replies about numeric/tabular facts (mirrors the documented Whisper hallucination
+  issue, §5.3, but on the generation side). Mitigated with a truncation filter
+  (`tool_agent._detoxify_repetition`), not fully solved — see `rag-tts-evaluvation.md` §2.12.
+- **Prepaid demo accounts drift into "expired"** if the DB isn't reseeded near the demo date —
+  `db_seed_data.py` now computes prepaid `activated_on` relative to seed time, but a DB seeded
+  long before the actual demo can still drift; re-run `scripts/manage_db.py --reset` close to
+  presentation day if a long gap has passed.
 
 ---
 
@@ -850,4 +876,115 @@ uv run python scripts/manage_kb.py --rebuild billing_policy
 
 # Check all collections
 uv run python scripts/manage_kb.py --status
+
+# Test hybrid retrieval directly, no LLM call needed
+uv run python scripts/manage_kb.py --search "2gb daily plan 300 rupees" --collection product_catalog
 ```
+
+---
+
+## 13. Changes Made — Aug 16 Session (RAG + Complaints Audit)
+
+Full evidence, measurements, and root-cause analysis: **[`rag-tts-evaluvation.md`](rag-tts-evaluvation.md)**.
+This section is the changelog summary. Scope was explicitly RAG + tools + graph + mock DB — ASR/
+VAD/TTS were not touched.
+
+### 13.1 Two tool-crashing bugs fixed (pre-existing, unrelated to the RAG changes)
+
+- `tools/billing.py::getBalance()` — `NameError: _row_to_dict` on every call (not imported).
+- `tools/complaints.py::createComplaint()` — `NameError: SLA_DAYS` on every call (not imported).
+- Found via live tool invocation + `ruff check src --select F821` across the whole package.
+  Neither is caught by `uv run pytest` (the suite never calls a tool against the seeded DB —
+  flagged as the top test-coverage gap in `rag-tts-evaluvation.md` §7).
+
+### 13.2 RAG retrieval quality — chunking + real hybrid search
+
+- `rag/chunking.py`: fixed section-blending bug (sentences from different `##`/`###` sections
+  were being greedily packed into one chunk). Rebuilt all 5 ChromaDB collections
+  (`scripts/build_kb.py --reset`) — chunk counts and avg sizes changed, see
+  `rag-tts-evaluvation.md` §3.
+- `rag/hybrid.py` (new): "hybrid RAG" was previously vector-only — `rag/bm25.py` was a stub that
+  never scored the query at all and was never wired into the live query path. Now a real
+  `rank_bm25` + ChromaDB-cosine fusion, wired into `rag/manager_read.py::read()`.
+- Measured: the exact customer query from the supplied test transcript
+  ("2GB daily data plan 300 rupees budget") went from **not appearing in the top 5 results at
+  all** to **rank #2 at sim=0.55–0.81**, now correctly surfacing the ₹299 Prepaid Value plan.
+
+### 13.3 Orchestrator / routing fixes
+
+- `sensitive` no longer conflates "raising a new billing dispute" with "checking status of an
+  existing one" — status checks now route to `complaints` and resolve via `getTicketStatus`
+  instead of skipping straight to human handoff.
+- New `chitchat` route + `chitchat_node`: acknowledgements ("thanks", "ok") no longer fall into
+  `unclear` — previously this could (after 2 turns) wrongly escalate a customer to a human agent
+  for saying "thank you" twice. This directly fixes the repeated-clarify-loop pattern in the
+  supplied `agent result.txt` transcript.
+- `_fetch_account_context()` now includes recently RESOLVED/closed tickets (previously excluded),
+  so "is my issue fixed" is answerable from context in every sub-agent, not just complaints.
+- Coverage agent gained a `getTicketStatus` tool (previously only complaints had one) — a
+  follow-up like "is my 5G issue fixed" no longer re-asks for a pincode.
+
+### 13.4 Guardrail bugfix
+
+- `guardrail_node()` was scanning the **assistant's own draft reply** for "human agent" patterns
+  and silently discarding good, specific answers whenever they mentioned escalation as an
+  *option* (which the sub-agent prompt explicitly tells them to do). Fixed to only check the
+  customer's actual transcript.
+
+### 13.5 Tool-calling loop hardening
+
+- `graph/tool_agent.py::run_tool_agent()`: added dedup for identical repeated tool calls within a
+  turn (previously observed: 6 near-identical KB searches burning all 6 iterations / 195s on one
+  question) and a repetition-loop filter (`_detoxify_repetition`) for the generation side —
+  `llama-3.1-8b-instant` was observed live degenerating into a ~30x phrase-repeat loop when
+  translating price facts to Tamil, the same failure class §5.3 already documents for Whisper.
+
+### 13.6 New tools
+
+- `escalateToHuman` added to billing/plans/coverage (previously complaints-only), via a new
+  shared `tools/session.py::build_escalate_tool()` factory.
+- `getTicketStatus` added to coverage.
+
+### 13.7 KB content additions
+
+- `data/kb/product_catalog.md`: family-plan add-line cost was previously undocumented (root
+  cause of the 6x repeated-search bug above) — added an explicit "no separate per-line fee" fact.
+- `data/kb/support_faq.md`: added FAQ entries grounding the dispute-status-vs-new-dispute
+  distinction and the SIM-replacement-approval compliance rule.
+
+### 13.8 Mock DB fixes
+
+- Fixed the two crash bugs above (verified DB mutations persist correctly for `changePlan`
+  two-phase consent and `createComplaint`).
+- 3 of 5 seeded prepaid demo accounts had drifted into "expired" (stale hardcoded activation
+  dates vs. today's date) — fixed live DB dates and made `db_seed_data.py` compute them relative
+  to seed time going forward.
+
+### 13.9 Admin tooling
+
+- `scripts/manage_kb.py` was completely dead code (referenced a nonexistent file, called
+  functions that don't exist in the current package layout) — rewritten against the current
+  `vay.rag.manager` package; `--status` / `--search` / `--rebuild` all verified working.
+
+### 13.10 Addendum — 4 more bugs found via live hand-testing (`rag-tts-evaluvation.md` §9)
+
+Found by actually running `run_assistant.py --show_debug` against an aggressive-caller +
+troubleshooting scenario, after the fixes above:
+
+- **`aggressive_count` never persisted across turns** — `scripts/run_assistant.py` rebuilds
+  `GraphState` fresh every turn, so `state.get("aggressive_count", 0)` was always 0. A caller
+  could swear repeatedly and the call would NEVER reach the 2nd-offence cut. Fixed: moved to
+  `session.aggressive_count` (mirrors the already-correct `session.consecutive_unclear` pattern).
+  Same root cause had also silently disabled `previous_route`/domain-switch history trimming
+  since Aug 14 — fixed via a new `session.last_route` field.
+- **`closing_node` discarded the call-cut message** — a forced 2nd-offence call termination
+  routed through `closing_node`, which unconditionally asked the LLM for a generic warm goodbye,
+  ignoring the deterministic `CALL_CUT_TEMPLATES` text already built for exactly this moment.
+  Fixed: speaks `state["warning_reply"]` verbatim when present.
+- **`aggressive` over-triggered on frustration/punctuation alone** — prompt tightening wasn't
+  reliable enough on `llama-3.1-8b-instant`; added a deterministic `ABUSIVE_LANGUAGE_PATTERN`
+  regex gate (English-focused, known limitation on Tamil/Hindi-only threats).
+- **"Internet very slow" routed to `coverage`**, which has no troubleshooting tool/KB access —
+  the actual 5-step guide lives in `support_faq.md` / `complaints.runTroubleshootFlow`. Routing
+  guide rewritten to send troubleshooting-flavored complaints (slow data, call drops, SMS
+  issues, can't call, recharge not reflecting) to `complaints`, not `coverage`.

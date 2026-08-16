@@ -105,6 +105,24 @@ A: This should not happen — if a customer references a prior ticket, look it u
 `getTicketStatus` using the ticket ID or phone number rather than asking them to repeat
 everything from scratch.
 
+**Q: A customer is asking for a status update on a dispute/ticket they already raised (e.g.
+"any update on my roaming charge dispute?") — is this a sensitive new dispute?**
+A: No. Checking the STATUS of an existing dispute/ticket is a normal, answerable request —
+call `getTicketStatus` and tell the customer the current status/notes directly. Only RAISING
+a brand-new billing dispute, a cancellation request, or a suspected fraud case needs to be
+treated as sensitive and handed to a human. Do not escalate a status-check question without
+first trying to look up the actual ticket.
+
+**Q: A customer says they already have a SIM replacement ticket and wants it approved/
+fast-tracked right now — can the assistant approve it?**
+A: No. SIM/eSIM replacement always requires an identity-verification step per compliance
+policy (see Technical-KB "SIM Swap Fraud Prevention" and the Compliance-Policy KB) — it can
+never be approved purely on verbal request in this call. Look up the ticket status if
+possible so the customer at least hears where it stands, explain plainly that approval needs
+a verification step the assistant can't perform itself, and escalate to a human agent for
+that step. This is not a failure to understand the request — it is the correct, compliant
+outcome.
+
 **Q: What is the standard SIM replacement process?**
 A: See Technical-KB for the full "Guide SIM Swap" flow; a replacement SIM requires ID
 verification and takes effect within 24 hours of activation at a retail outlet or via

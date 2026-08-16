@@ -43,6 +43,7 @@ from langchain_core.tools import tool
 from vay.tools.session import (
     SENSITIVE_DENIAL,
     SessionContext,
+    build_escalate_tool,
     consent_script,
 )
 
@@ -152,7 +153,14 @@ def build_plans_tools(session: SessionContext) -> list:
         conn.commit()
         return f"Add-on '{addon_name}' activated (may take up to 2 hours to reflect)."
 
-    return [listPlans, comparePlans, changePlan, activateAddOn, checkEligibility]
+    return [
+        listPlans,
+        comparePlans,
+        changePlan,
+        activateAddOn,
+        checkEligibility,
+        build_escalate_tool(session),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from vay.tts import engine as tts
 
 from vay.graph.state import GraphState
 from vay.graph.utils import (
+    CHITCHAT_TEMPLATES,
     CLARIFY_TEMPLATES,
     CLOSING_FALLBACK_TEMPLATES,
     DEFAULT_NLU_CONFIDENCE,
@@ -73,8 +74,17 @@ def guardrail_node(state: GraphState) -> GraphState:
             "handoff_reason": f"Low retrieval confidence ({retrieval_score:.2f} < {min_similarity}).",
         }
 
-    # --- Human request in transcript or draft ---
-    if HUMAN_REQUEST_PATTERNS.search(state["transcript"]) or HUMAN_REQUEST_PATTERNS.search(draft):
+    # --- Human request in the CUSTOMER's own transcript ---
+    # BUGFIX: this used to ALSO scan the assistant's own draft reply for the same
+    # pattern. Since the sub-agent prompt explicitly tells the LLM to say things like
+    # "I can connect you to a human agent" when offering escalation as an option, that
+    # phrase itself matched HUMAN_REQUEST_PATTERNS on the DRAFT and silently replaced an
+    # otherwise good, specific, grounded answer with the generic handoff template -- i.e.
+    # every sub-agent reply that so much as mentioned "human agent" was self-sabotaging.
+    # A sub-agent that actually decides to escalate should do so via the escalateToHuman
+    # tool (session.escalation_requested), which is already checked above via
+    # state.get("handoff") -- not by pattern-matching its own prose.
+    if HUMAN_REQUEST_PATTERNS.search(state["transcript"]):
         return {"handoff": True, "handoff_reason": "Customer requested a human agent."}
 
     # --- Uncertainty: only handoff if retrieval score is ALSO below a relaxed threshold ---
@@ -170,6 +180,14 @@ def warning_node(state: GraphState) -> GraphState:
 # Clarify node
 # ---------------------------------------------------------------------------
 
+def chitchat_node(state: GraphState) -> GraphState:
+    """A fixed, non-LLM reply for acknowledgements/thanks/greetings with nothing
+    actionable in them -- see ORCHESTRATOR_SYSTEM_PROMPT's chitchat routing guide.
+    Deliberately separate from clarify_node: this turn WAS understood, so the reply
+    doesn't ask the customer to repeat themselves."""
+    return {"final_reply": localized(CHITCHAT_TEMPLATES, state["language"])}
+
+
 def clarify_node(state: GraphState) -> GraphState:
     """A human-agent-free re-prompt for a turn the orchestrator couldn't understand/route
     confidently, used instead of an immediate human_handoff (see route_after_orchestrator) --
@@ -184,6 +202,19 @@ def clarify_node(state: GraphState) -> GraphState:
 # ---------------------------------------------------------------------------
 
 def closing_node(state: GraphState) -> GraphState:
+    # BUGFIX: route_after_orchestrator sends the 2nd-offence abusive-caller call-cut here too
+    # ("Call was cut due to repeated abuse -- treat as closing so TTS plays the goodbye"), but
+    # this node used to ALWAYS ask the LLM to generate a generic warm "thank you for calling"
+    # line -- completely discarding the deterministic, hand-written CALL_CUT_TEMPLATES text
+    # (orchestrator_node already built it into state["warning_reply"] specifically so the
+    # customer is told WHY the call is ending, per core_utils.py's comment that this text
+    # "cannot be side-stepped by a hallucinating model"). A customer being cut off for abuse was
+    # instead hearing a cheerful, unrelated goodbye and never learning their call was terminated
+    # for that reason. If warning_reply is set, this IS that forced-closing case -- speak it
+    # verbatim, no LLM call needed (there's nothing to generate).
+    if state.get("warning_reply"):
+        return {"final_reply": state["warning_reply"]}
+
     llm = _llm()
     messages = [
         SystemMessage(
@@ -233,9 +264,10 @@ def route_after_orchestrator(state: GraphState) -> str:
     2. Warning (1st aggressive offence) → warning node
     3. Normal call end requested → closing
     4. Sensitive intent → human_handoff
-    5. Unclear/low-confidence (with escalation) → human_handoff
-    6. Unclear/low-confidence (first time) → clarify
-    7. Valid route → billing / plans / complaints / coverage
+    5. Chitchat (understood, nothing actionable) → chitchat node
+    6. Unclear/low-confidence (with escalation) → human_handoff
+    7. Unclear/low-confidence (first time) → clarify
+    8. Valid route → billing / plans / complaints / coverage
     """
     # Call was cut due to repeated abuse — treat as closing so TTS plays the goodbye
     if state.get("call_end_requested") and state.get("warning_reply"):
@@ -250,6 +282,9 @@ def route_after_orchestrator(state: GraphState) -> str:
 
     if state.get("sensitive"):
         return "human_handoff"
+
+    if state.get("route") == "chitchat":
+        return "chitchat"
 
     if state.get("route") == "unclear" or state.get("nlu_confidence", 0.0) < DEFAULT_NLU_CONFIDENCE:
         return "human_handoff" if state.get("unclear_escalate") else "clarify"

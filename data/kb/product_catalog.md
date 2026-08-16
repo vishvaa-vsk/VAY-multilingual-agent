@@ -86,6 +86,13 @@ relocation/re-installation fee of ₹499 applies for moving an existing connecti
 - **Family plan eligibility**: Up to 4 connections can be linked under Postpaid Family/Pro
   plans, all billed to one primary account holder; each linked number must complete its own
   KYC.
+- **Adding a line to a Family plan — cost**: There is NO separate per-line addition fee.
+  Postpaid Family (₹699/month) and Postpaid Pro already include shared data/voice/SMS across
+  up to 4 connections at that one flat monthly price — adding the 2nd, 3rd, or 4th linked
+  number only requires that number's own KYC completion; it does not add to the monthly
+  bill. If a customer wants a 5th line or a line billed independently instead of sharing the
+  family plan's data pool, direct them to activate it as a separate new connection (e.g.
+  Postpaid Solo) rather than linking it to the family plan.
 - **Student/Youth plan eligibility**: Youth Unlimited requires age 18–25 verified via a valid
   student ID or Aadhaar DOB at activation; re-verified annually.
 - **Loyalty/renewal offers**: Customers active for 12+ continuous months are eligible for a

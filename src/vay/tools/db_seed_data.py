@@ -1,6 +1,20 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "nexatel_customers.db"
+
+
+def _days_ago(n: int) -> str:
+    """ISO date `n` days before whenever this module is imported/seeded.
+
+    Prepaid subscriptions below used to hardcode a fixed calendar date (e.g.
+    "2026-06-20"). Since prepaid validity = activated_on + validity_days, a
+    fixed past date silently drifts into "expired" as real time moves past it
+    -- 3 of 5 demo prepaid accounts were showing as EXPIRED by the time this
+    was caught (see rag-tts-evaluuation.md). Computing relative to seed time
+    keeps a freshly-reset DB demo-ready regardless of when --reset is run.
+    """
+    return (date.today() - timedelta(days=n)).isoformat()
 
 PLANS = [
     (
@@ -209,17 +223,21 @@ CUSTOMERS = [
 ]
 
 # phone -> (plan_id, activated_on, addons)
+# Prepaid entries use _days_ago() (relative to validity_days below) so a freshly
+# reseeded DB never starts with an already-expired demo plan. Postpaid/broadband
+# entries keep fixed historical dates -- they only convey "customer since"
+# tenure, which isn't validity-sensitive the way prepaid plans are.
 SUBSCRIPTIONS = {
-    "9876500001": ("PPD_VALUE", "2026-06-20", ""),
+    "9876500001": ("PPD_VALUE", _days_ago(5), ""),  # 28-day validity
     "9876500002": ("POST_PRO", "2025-11-01", "OTT Super Bundle"),
-    "9876500003": ("YOUTH_UNL", "2026-07-25", ""),
+    "9876500003": ("YOUTH_UNL", _days_ago(10), ""),  # 28-day validity
     "9876500004": ("POST_INFINITY", "2024-03-15", "Device Protection Plan,OTT Super Bundle"),
-    "9876500005": ("PPD_PLUS", "2026-07-30", ""),
+    "9876500005": ("PPD_PLUS", _days_ago(3), ""),  # 28-day validity
     "9876500006": ("POST_FAMILY", "2025-01-10", "Caller Tune"),
-    "9876500007": ("PPD_BASIC", "2026-06-01", ""),
+    "9876500007": ("PPD_BASIC", _days_ago(7), ""),  # 28-day validity
     "9876500008": ("POST_SOLO", "2025-05-05", ""),
     "9876500009": ("FIBER_PLUS", "2025-09-01", ""),
-    "9876500010": ("PPD_84_VALUE", "2026-05-10", ""),
+    "9876500010": ("PPD_84_VALUE", _days_ago(20), ""),  # 84-day validity
 }
 
 # a few tickets across statuses/categories

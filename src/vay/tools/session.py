@@ -66,6 +66,14 @@ class SessionContext:
     # Number of turns the caller has used aggressive/abusive language. On the first offence a
     # warning is spoken in their language; on the second the call is terminated.
     aggressive_count: int = 0
+    # Route used in the PREVIOUS turn (billing/plans/complaints/coverage/chitchat/unclear) --
+    # used by _run_subagent to detect a domain switch and trim stale tool messages. Lives here,
+    # not in GraphState, for the same reason aggressive_count and consecutive_unclear do: the
+    # caller (scripts/run_assistant.py) builds a FRESH GraphState dict every turn and never
+    # threads the previous graph.invoke() result back in -- session is the only object that
+    # actually survives across turns. See rag-tts-evaluvation.md for the bug this caused when
+    # aggressive_count/previous_route were (incorrectly) read from state instead of session.
+    last_route: str = ""
 
 
 SENSITIVE_DENIAL = (
@@ -156,6 +164,34 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
         return template.format(plan_name=plan["plan_name"], price=plan["price"])
 
     return None
+
+
+def build_escalate_tool(session: "SessionContext"):
+    """Shared escalateToHuman tool factory, used by ALL FOUR sub-agents (billing,
+    plans, complaints, coverage) -- not just complaints.
+
+    Previously only complaints.py had this tool. The other three sub-agents had no
+    tool-based way to signal "this needs a human" -- so when their LLM decided
+    escalation was warranted, it could only say so in free text (e.g. "I can connect
+    you to a human agent"), which the guardrail's HUMAN_REQUEST_PATTERNS regex then
+    mis-matched against the ASSISTANT's own draft reply (see nodes/utils.py bugfix),
+    silently discarding an otherwise good, specific answer. Giving every sub-agent
+    this tool means an intentional escalation decision is always made explicitly and
+    reliably via session.escalation_requested, exactly like complaints.py already did.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def escalateToHuman(reason: str) -> str:
+        """Escalate this call to a human agent, e.g. for anger/frustration, a repeated
+        unresolved issue, an explicit request for a human, or an action (like approving
+        an existing ticket, or a sensitive identity-verification step) that this
+        assistant is not permitted to complete itself."""
+        session.escalation_requested = True
+        session.escalation_reason = reason
+        return f"Escalating to a human agent: {reason}"
+
+    return escalateToHuman
 
 
 TROUBLESHOOT_FLOWS = {

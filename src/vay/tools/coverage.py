@@ -38,7 +38,7 @@ import vay.tools.db_queries as customer_db
 
 from langchain_core.tools import tool
 
-from vay.tools.session import SessionContext
+from vay.tools.session import SessionContext, build_escalate_tool
 
 
 # ---------------------------------------------------------------------------
@@ -98,4 +98,36 @@ def build_coverage_tools(session: SessionContext) -> list:
             "5. Number, balance, and plan carry over automatically."
         )
 
-    return [checkCoverage, getOutageStatus, getDeviceSettings, guideSimSwap]
+    @tool
+    def getTicketStatus(ticket_id: str = "") -> str:
+        """Get the status of a previously-logged network/technical ticket by ticket_id, or
+        the caller's most recent tickets if ticket_id is left empty. Use this BEFORE asking
+        for a pincode or re-running troubleshooting when the customer is asking about an
+        issue they already reported (e.g. "is my 5G issue fixed", "any update on my
+        ticket") -- the account context above may already show it, but this also finds
+        RESOLVED tickets that the account context omits."""
+        if ticket_id:
+            row = conn.execute("SELECT * FROM tickets WHERE ticket_id=?", (ticket_id,)).fetchone()
+            rows = [row] if row else []
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tickets WHERE phone_number=? ORDER BY created_at DESC LIMIT 3",
+                (session.phone_number,),
+            ).fetchall()
+        if not rows:
+            return "No matching ticket found."
+        return "\n".join(
+            f"{r['ticket_id']} [{r['category']}] status={r['status']}, sla_due={r['sla_due']}: "
+            f"{r['description']}"
+            + (f" — notes: {r['resolution_notes']}" if r["resolution_notes"] else "")
+            for r in rows
+        )
+
+    return [
+        checkCoverage,
+        getOutageStatus,
+        getDeviceSettings,
+        guideSimSwap,
+        getTicketStatus,
+        build_escalate_tool(session),
+    ]

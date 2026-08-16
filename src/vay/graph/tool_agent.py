@@ -36,6 +36,8 @@ USAGE
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -43,6 +45,30 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from vay.graph.utils import localized
 
 MAX_TOOL_ITERATIONS = 6
+
+# Repetition-loop guard on the SUB-AGENT's generated reply -- the same class of
+# fix project_context.md §5.3 already documents for ASR output ("Whisper
+# hallucinates ... post-ASR hallucination/repetition filter"), applied here to
+# LLM generation instead. Live testing surfaced the same degenerate-repeat
+# failure mode on the generation side: a smaller model (llama-3.1-8b-instant)
+# asked to translate concrete price/plan facts into Tamil sometimes locks onto
+# a short phrase and repeats it dozens of times instead of stopping (e.g.
+# "...299 ரூபாய் வரையிலான பயனர்களுக்கு " repeated ~30x) -- see
+# rag-tts-evaluuation.md for the captured example. Matches any 12-80 char
+# span that repeats 3+ times back-to-back and truncates right before it.
+_REPEAT_RE = re.compile(r"(.{12,80}?)\1{2,}", re.DOTALL)
+
+
+def _detoxify_repetition(text: str) -> str:
+    if not text:
+        return text
+    match = _REPEAT_RE.search(text)
+    if not match:
+        return text
+    truncated = text[: match.start()].rstrip()
+    # If the repetition started almost immediately, there's nothing salvageable
+    # before it -- keep just the first clean occurrence instead of returning empty.
+    return truncated if len(truncated) >= 20 else text[: match.end(1)].rstrip()
 
 HANDOFF_MESSAGE_TEMPLATES = {
     "en": (
@@ -87,6 +113,15 @@ def run_tool_agent(
         [SystemMessage(content=system_prompt)] + list(history) + [HumanMessage(content=user_text)]
     )
 
+    # Dedup guard: a small model will sometimes retry the exact same (or a near-identical)
+    # tool call several times in a row when the first result wasn't what it wanted --
+    # e.g. re-issuing search_product_catalog with trivially reworded queries, burning
+    # the whole MAX_TOOL_ITERATIONS budget (and real latency/token cost) without ever
+    # finding a different answer. Track exact (name, args) signatures seen this turn; a
+    # repeat is answered locally without a further tool invocation or LLM round-trip,
+    # and nudges the model to try something different or wrap up instead of looping.
+    seen_calls: dict[str, int] = {}
+
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
             ai_msg: AIMessage = bound_llm.invoke(messages)
@@ -101,6 +136,7 @@ def run_tool_agent(
 
         if not getattr(ai_msg, "tool_calls", None):
             reply = (ai_msg.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
             if show_debug:
                 print(f"  [LLM final reply] {reply}")
             return reply
@@ -111,16 +147,31 @@ def run_tool_agent(
             print(f"  [LLM message] {ai_msg.content.strip()[:500]}")
 
         for call in ai_msg.tool_calls:
-            tool_fn = tools_by_name.get(call["name"])
-            if tool_fn is None:
-                result = f"Unknown tool: {call['name']}"
+            # json.dumps (not a tuple of dict items) so unhashable arg values -- e.g.
+            # comparePlans(plan_ids=[...]) -- don't crash the signature computation.
+            signature = call["name"] + "|" + json.dumps(call["args"], sort_keys=True, default=str)
+            seen_calls[signature] = seen_calls.get(signature, 0) + 1
+
+            if seen_calls[signature] > 1:
+                result = (
+                    "You already called this exact tool with these exact arguments and got "
+                    "a result -- calling it again will return the same thing. Either use a "
+                    "meaningfully different query/argument, or stop searching and answer with "
+                    "what you already have (say plainly if the exact answer wasn't found)."
+                )
+                if show_debug:
+                    print(f"  [tool call SKIPPED (duplicate #{seen_calls[signature]})] {call['name']}({call['args']})")
             else:
-                try:
-                    result = tool_fn.invoke(call["args"])
-                except Exception as e:
-                    result = f"Tool error: {e}"
-            if show_debug:
-                print(f"  [tool call] {call['name']}({call['args']}) -> {str(result)[:200]}")
+                tool_fn = tools_by_name.get(call["name"])
+                if tool_fn is None:
+                    result = f"Unknown tool: {call['name']}"
+                else:
+                    try:
+                        result = tool_fn.invoke(call["args"])
+                    except Exception as e:
+                        result = f"Tool error: {e}"
+                if show_debug:
+                    print(f"  [tool call] {call['name']}({call['args']}) -> {str(result)[:200]}")
 
             # STOP_AND_SAY: sentinel (see tools.changePlan) -- a sensitive action just staged
             # a pending confirmation. Return its consent script VERBATIM as the final reply
@@ -148,6 +199,7 @@ def run_tool_agent(
     )
     final = llm.invoke(messages)
     reply = (final.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     if show_debug:
         print(f"  [LLM wrap-up reply] {reply}")
     return reply
