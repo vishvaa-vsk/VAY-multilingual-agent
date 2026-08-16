@@ -406,7 +406,7 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
     )
     
     _t_subagent_end = _time.time()
-    print(f"  [SubAgent] RAG tracker: called={tracker.called} | last_score={tracker.last_score:.2f if tracker.called else 'N/A'}")
+    print(f"  [SubAgent] RAG tracker: called={tracker.called} | last_score={tracker.last_score:.2f}" if tracker.called else f"  [SubAgent] RAG tracker: called=False | last_score=N/A")
     print(f"  [SubAgent] Took {_t_subagent_end - _t_subagent_start:.2f}s")
 
     result: GraphState = {
