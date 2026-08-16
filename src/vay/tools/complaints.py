@@ -57,6 +57,19 @@ def build_complaints_tools(session: SessionContext) -> list:
     def createComplaint(category: str, description: str) -> str:
         """Log a new complaint/service-request ticket. category must be one of
         'network', 'billing', 'service_request', 'technical', 'other'."""
+        cust = conn.execute(
+            "SELECT 1 FROM customers WHERE phone_number=?", (session.phone_number,)
+        ).fetchone()
+        if not cust:
+            # tickets.phone_number is a FOREIGN KEY on customers(phone_number) -- inserting
+            # for a caller who isn't a known customer would otherwise raise a raw
+            # "FOREIGN KEY constraint failed" IntegrityError from sqlite, which the LLM/tool
+            # layer has no way to recover from mid-turn. Fail soft with a message the
+            # sub-agent can act on (mirrors getBalance()'s "No account found" pattern).
+            return (
+                "Unable to log a complaint — no account found for this phone number. "
+                "Please connect the caller to a human agent to verify the account."
+            )
         category = category.strip().lower()
         if category not in SLA_DAYS:
             category = "other"

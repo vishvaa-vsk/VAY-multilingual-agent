@@ -176,17 +176,19 @@ def orchestrator_node(state: GraphState) -> GraphState:
         )
     )
 
+    import time as _time
+    _t_orch_start = _time.time()
     try:
         raw = llm.invoke(messages).content
     except Exception as e:
         print(f"  [Orchestrator LLM call failed: {e}]")
         raw = None
-
-    if state.get("show_debug") and raw is not None:
-        print(f"  [Orchestrator raw LLM output] {raw.strip()[:500]}")
+    _t_orch_end = _time.time()
+    print(f"  [Orchestrator] LLM call took {_t_orch_end - _t_orch_start:.2f}s")
 
     parsed = extract_json(raw) if raw else None
     if parsed is None:
+        print("  [Orchestrator] WARNING: LLM returned unparseable JSON, defaulting to unclear")
         parsed = {
             "language": state["language"],
             "intent": "unclear",
@@ -198,6 +200,13 @@ def orchestrator_node(state: GraphState) -> GraphState:
             "aggressive": False,
             "call_end_requested": False,
         }
+
+    # Always print the orchestrator's NLU decision for debugging
+    print(f"  [Orchestrator NLU] intent={parsed.get('intent')} | route={parsed.get('route')} | "
+          f"confidence={parsed.get('confidence')} | sensitive={parsed.get('sensitive')} | "
+          f"aggressive={parsed.get('aggressive')}")
+    print(f"  [Orchestrator NLU] normalized_query: {parsed.get('normalized_query', '')}")
+    print(f"  [Orchestrator NLU] entities: {parsed.get('entities', {})}")
 
     route = parsed.get("route") if parsed.get("route") in (VALID_ROUTES | {"chitchat"}) else "unclear"
     confidence = (
@@ -377,6 +386,10 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
     rag_tool = rag_tool_builder(tracker)
     llm = _llm()
 
+    import time as _time
+    _t_subagent_start = _time.time()
+    print(f"  [SubAgent] route={route} | normalized_query={state['normalized_query'][:120]}")
+    
     reply = run_tool_agent(
         llm,
         domain_tools + [rag_tool],
@@ -391,6 +404,10 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
         language=state["language"],
         show_debug=state.get("show_debug", False),
     )
+    
+    _t_subagent_end = _time.time()
+    print(f"  [SubAgent] RAG tracker: called={tracker.called} | last_score={tracker.last_score:.2f}" if tracker.called else f"  [SubAgent] RAG tracker: called=False | last_score=N/A")
+    print(f"  [SubAgent] Took {_t_subagent_end - _t_subagent_start:.2f}s")
 
     result: GraphState = {
         "draft_reply": reply,

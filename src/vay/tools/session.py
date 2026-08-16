@@ -155,6 +155,19 @@ CONFIRM_CHANGED_TEMPLATES = {
     "hi": "पुष्टि हो गई — प्लान बदलकर {plan_name} (Rs {price}) कर दिया गया है, यह तुरंत प्रभावी है।",
     "ta": "உறுதி செய்யப்பட்டது — திட்டம் {plan_name} (Rs {price}) ஆக மாற்றப்பட்டது, உடனடியாக நடைமுறைக்கு வரும்.",
 }
+# subscriptions.phone_number is a FOREIGN KEY on customers(phone_number) -- used when
+# session.phone_number has no matching row, which would otherwise raise a raw sqlite
+# IntegrityError from the INSERT below (same failure mode as createComplaint() in
+# tools/complaints.py). Shouldn't normally happen since changePlan() requires
+# session.verified, but this keeps confirm_pending_action() failing soft either way.
+CONFIRM_NO_ACCOUNT_TEMPLATES = {
+    "en": "Sorry, I couldn't find an account for this number — nothing was changed. "
+    "Connecting you to a human agent.",
+    "hi": "क्षमा करें, इस नंबर के लिए कोई खाता नहीं मिला — कुछ भी नहीं बदला गया। "
+    "आपको एक मानव एजेंट से जोड़ रहा हूँ।",
+    "ta": "மன்னிக்கவும், இந்த எண்ணிற்கு கணக்கு எதுவும் கிடைக்கவில்லை — எதுவும் மாற்றப்படவில்லை. "
+    "உங்களை ஒரு மனித முகவருடன் இணைக்கிறேன்.",
+}
 
 
 def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> str | None:
@@ -181,6 +194,11 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
         plan = conn.execute("SELECT * FROM plans WHERE plan_id=?", (new_plan_id,)).fetchone()
         if not plan:
             return CONFIRM_UNAVAILABLE_TEMPLATES.get(lang, CONFIRM_UNAVAILABLE_TEMPLATES["en"])
+        cust = conn.execute(
+            "SELECT 1 FROM customers WHERE phone_number=?", (session.phone_number,)
+        ).fetchone()
+        if not cust:
+            return CONFIRM_NO_ACCOUNT_TEMPLATES.get(lang, CONFIRM_NO_ACCOUNT_TEMPLATES["en"])
         conn.execute(
             "UPDATE subscriptions SET status='cancelled' WHERE phone_number=? AND status='active'",
             (session.phone_number,),

@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import re
 from typing import Any
 
 import numpy as np
@@ -20,6 +21,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 from vay.asr.base import BaseASR
+from vay.asr.hallucinations import HALLUCINATION_BLACKLIST
 from vay.config import settings
 from vay.types import ASRResult, LanguageTier
 
@@ -144,8 +146,8 @@ class WhisperASR(BaseASR):
         )
         return no_speech > 0.6
 
-    def filter_hallucinations(self, text: str) -> str:
-        """Remove consecutive duplicate words (Whisper repetition hallucination)."""
+    def filter_hallucinations(self, text: str, language_code: str) -> str:
+        """Remove consecutive duplicate words and filter known Whisper hallucinations."""
         words = text.split()
         if not words:
             return ""
@@ -153,7 +155,25 @@ class WhisperASR(BaseASR):
         for word in words:
             if not filtered or filtered[-1].lower() != word.lower():
                 filtered.append(word)
-        return " ".join(filtered)
+        deduped_text = " ".join(filtered)
+
+        # Normalize the string to check against our hardcoded blacklist
+        normalized_deduped = re.sub(r'[^\w\s]', '', deduped_text).lower().strip()
+        
+        if not normalized_deduped:
+            return ""
+
+        # Fetch the blacklist for this language (if it exists)
+        blacklist = HALLUCINATION_BLACKLIST.get(language_code, set())
+
+        # Check if the transcription is just a hallucination (or a repeated hallucination)
+        for bad_phrase in blacklist:
+            # Check if it matches exactly, or if it's the bad phrase repeated back to back
+            if normalized_deduped == bad_phrase or normalized_deduped.replace(bad_phrase, "").strip() == "":
+                print(f"[WhisperASR] Blocked hallucination ({language_code}): '{text}' (Matched: '{bad_phrase}')")
+                return ""
+
+        return deduped_text
 
     # ------------------------------------------------------------------
     # PRIMARY: single-pass transcription + language detection
@@ -206,7 +226,7 @@ class WhisperASR(BaseASR):
             if no_speech > 0.3:
                 confidence *= 1.0 - no_speech
 
-        cleaned_text = self.filter_hallucinations(getattr(response, "text", "") or "")
+        cleaned_text = self.filter_hallucinations(getattr(response, "text", "") or "", detected_lang)
 
         return ASRResult(
             raw_text=cleaned_text,
@@ -260,7 +280,7 @@ class WhisperASR(BaseASR):
                 model_used=self.model_id,
             )
 
-        cleaned_text = self.filter_hallucinations(getattr(response, "text", "") or "")
+        cleaned_text = self.filter_hallucinations(getattr(response, "text", "") or "", validated)
         return ASRResult(
             raw_text=cleaned_text,
             detected_language=validated,

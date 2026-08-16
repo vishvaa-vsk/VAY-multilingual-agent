@@ -67,8 +67,12 @@ def guardrail_node(state: GraphState) -> GraphState:
     min_similarity = state.get("min_similarity", 0.3)
     retrieval_score = state.get("retrieval_score", 0.0)
 
+    print(f"  [Guardrail] retrieval_score={retrieval_score:.2f} | min_similarity={min_similarity} | handoff_already={state.get('handoff')}")
+    print(f"  [Guardrail] draft_reply (first 200): {draft[:200]}")
+
     # --- Confidence gate ---
     if retrieval_score < min_similarity:
+        print(f"  [Guardrail] FAILED confidence gate ({retrieval_score:.2f} < {min_similarity}) -> HANDOFF")
         return {
             "handoff": True,
             "handoff_reason": f"Low retrieval confidence ({retrieval_score:.2f} < {min_similarity}).",
@@ -248,7 +252,8 @@ def closing_node(state: GraphState) -> GraphState:
 
 def tts_node(state: GraphState) -> GraphState:
     """Speak the final reply via edge-tts in the caller's detected language."""
-    tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
+    if os.environ.get("STREAMLIT_UI") != "1":
+        tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
     return {}
 
 

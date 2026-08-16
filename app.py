@@ -16,10 +16,24 @@ import streamlit as st
 import time
 import json
 import os
-from audio_handler import decode_audio, encode_audio_bytes
-from component_strands import strands_component
-from component_galaxy import galaxy_component
-from component_aurora import aurora_component
+os.environ["STREAMLIT_UI"] = "1"
+from vay.audio.audio_handler import decode_audio, encode_audio_bytes
+from vay.ui.component_strands import strands_component
+from vay.ui.component_galaxy import galaxy_component
+from vay.ui.component_aurora import aurora_component
+from vay.ui.component_specular_button import specular_button
+from vay.ui.component_splash_cursor import splash_cursor_component
+
+import io
+import soundfile as sf
+import torch
+from langchain_core.messages import AIMessage, HumanMessage
+
+from vay.asr.router import ASRRouter
+from vay.graph.state import GraphState
+from vay.graph.workflow import build_graph
+from vay.tools.session import SessionContext
+from vay.graph.utils import trim_history
 
 # Ensure page config is set first
 st.set_page_config(
@@ -39,6 +53,14 @@ except ImportError:
 # Inject custom global CSS for premium UI styling
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Electrolize&display=swap');
+
+    /* Global Electrolize Typography */
+    html, body, [class*="css"], .stApp, *,
+    h1, h2, h3, h4, h5, h6, p, span, div, input, select, textarea, button, label {
+        font-family: 'Electrolize', sans-serif !important;
+    }
+
     /* Hide Streamlit top header bar, decoration line, and toolbar */
     header[data-testid="stHeader"] {
         display: none !important;
@@ -63,10 +85,25 @@ st.markdown("""
         padding-top: 1.5rem !important;
     }
 
+    /* Hide Streamlit heading anchor links/hyperlinks next to titles */
+    h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    /* All custom components and iframes transparent */
+    iframe,
+    div[data-testid="stCustomComponentV1"],
+    div[data-testid="element-container"]:has(iframe) {
+        background: transparent !important;
+        background-color: transparent !important;
+    }
+
     /* Dark Theme Core Styles */
     .stApp {
         background: radial-gradient(circle at center, #111115 0%, #070708 100%);
         color: #f3f4f6;
+        font-family: 'Electrolize', sans-serif !important;
     }
     
     /* Custom Sidebar styling */
@@ -161,43 +198,214 @@ st.markdown("""
     }
 
     /* ==================================================== */
-    /* COUNTRY CODE & PHONE INPUT COLOR SETTINGS            */
+    /* COUNTRY CODE & PHONE INPUT UNIFIED GALAXY THEME     */
     /* ==================================================== */
     
-    /* 1. "Country Code" Label Color */
-    div[data-testid="stSelectbox"] label p {
-        color: #f97316 !important; /* <--- CHANGE COUNTRY CODE LABEL COLOR HERE */
-        font-weight: 600;
-        font-size: 14px;
-        letter-spacing: 0.5px;
-    }
-
-    /* 2. Country Code Dropdown Box (Background, Border, Selected Text) */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-        background-color: rgba(255, 255, 255, 0.1) !important; /* <--- CHANGE BOX BACKGROUND HERE */
-        border: 1px solid rgba(249, 115, 22, 0.4) !important;   /* <--- CHANGE BORDER COLOR HERE */
-        border-radius: 10px !important;
-    }
-
-    /* 3. Country Code Selected Value Text Color */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] * {
-        color: #000!important;                                 /* <--- CHANGE TEXT VALUE COLOR HERE */
-    }
-
-    /* 4. "Phone Number" Label Color */
+    /* 1. Country Code & Phone Number Labels (High Contrast Radiant Gradient) */
+    div[data-testid="stSelectbox"] label p,
     div[data-testid="stTextInput"] label p {
-        color: #06b6d4 !important; /* <--- CHANGE PHONE NUMBER LABEL COLOR HERE */
-        font-weight: 600;
-        font-size: 14px;
-        letter-spacing: 0.5px;
+        background: linear-gradient(135deg, #fb923c, #c084fc, #38bdf8) !important;
+        -webkit-background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        font-weight: 800 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.6px !important;
+        filter: drop-shadow(0 0 3px rgba(192, 132, 252, 0.25)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7)) !important;
+        display: inline-block !important;
+        margin-bottom: 6px !important;
     }
 
-    /* 5. Phone Number Input Box (Background & Border) */
+    /* 2. Full 100% Transparency on ALL elements of Selectbox and TextInput */
+    div[data-testid="stSelectbox"],
+    div[data-testid="stSelectbox"] *,
+    div[data-testid="stSelectbox"] div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] input,
+    div[data-testid="stTextInput"],
+    div[data-testid="stTextInput"] *,
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stTextInput"] > div > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"],
     div[data-testid="stTextInput"] input {
-        background-color: rgba(0, 0, 0, 0) !important;
-        border: 1px solid rgba(6, 182, 212, 0.4) !important;
-        color: #00000 !important;
-        border-radius: 10px !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+    }
+
+    /* 3. Galaxy Themed Border on Country Code and Phone Number Boxes */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stTextInput"] input {
+        background: transparent !important;
+        background-color: transparent !important;
+        border: 1.5px solid rgba(192, 132, 252, 0.65) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 0 16px rgba(192, 132, 252, 0.3), 0 0 24px rgba(56, 189, 248, 0.2) !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        transition: all 0.3s ease !important;
+        min-height: 48px !important;
+        height: 48px !important;
+        box-sizing: border-box !important;
+        font-size: 15px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.8px !important;
+    }
+
+    /* Clear intermediate wrappers for TextInput */
+    div[data-testid="stTextInput"] > div,
+    div[data-testid="stTextInput"] [data-baseweb="input"],
+    div[data-testid="stTextInput"] [data-baseweb="base-input"] {
+        border: none !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stTextInput"] input {
+        padding: 10px 16px !important;
+        letter-spacing: 1.2px !important;
+        width: 100% !important;
+    }
+
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        padding: 0 14px !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+
+    /* Unified Hover and Focus States with Galaxy Neon Glow */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"]:hover > div,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"]:focus-within > div,
+    div[data-testid="stTextInput"] input:hover,
+    div[data-testid="stTextInput"] input:focus {
+        background: transparent !important;
+        background-color: transparent !important;
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 22px rgba(192, 132, 252, 0.65), 0 0 35px rgba(56, 189, 248, 0.5) !important;
+    }
+
+    /* Selected Value Text in Country Code Dropdown & Typed Number (High Contrast Pure White) */
+    div[data-testid="stSelectbox"],
+    div[data-testid="stSelectbox"] *,
+    div[data-testid="stSelectbox"] input,
+    div[data-testid="stSelectbox"] input:focus,
+    div[data-testid="stSelectbox"] input:active,
+    div[data-testid="stSelectbox"] input:disabled,
+    div[data-testid="stSelectbox"] [data-baseweb="select"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] span,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] p,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] input,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [aria-selected="true"],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] [data-testid="stMarkdownContainer"] p,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div[value],
+    div[data-testid="stSelectbox"] [data-baseweb="select"] div[title],
+    div[data-testid="stTextInput"] input {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 1 !important;
+        font-weight: 700 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.8px !important;
+        text-shadow: none !important;
+    }
+
+    div[data-testid="stSelectbox"] input::placeholder {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 600 !important;
+    }
+
+    div[data-testid="stSelectbox"] svg {
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
+        transition: all 0.3s ease !important;
+        opacity: 1 !important;
+    }
+    div[data-testid="stSelectbox"]:hover svg {
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
+    }
+
+    /* High Contrast Placeholder text (Pure White) */
+    div[data-testid"stTextInput"] input::placeholder,
+    div[data-testid="stTextInput"] input::-webkit-input-placeholder,
+    div[data-testid="stTextInput"] input::-moz-placeholder {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.4px !important;
+        text-shadow: none !important;
+    }
+
+    /* "Press Enter to apply" instructions & helper text (Pure White) */
+    div[data-testid="InputInstructions"],
+    div[data-testid="InputInstructions"] *,
+    div[data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"],
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] *,
+    div[data-testid="stTextInput"] [data-testid="InputInstructions"] span,
+    div[data-testid="stTextInput"] small,
+    div[data-testid="stTextInput"] span {
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        opacity: 0.95 !important;
+        font-weight: 500 !important;
+    }
+
+    /* Dropdown Popover Menu (All Options Pure White) */
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="menu"],
+    ul[data-testid="stSelectboxVirtualDropdown"],
+    ul[role="listbox"] {
+        background: rgba(14, 14, 28, 0.95) !important;
+        background-color: rgba(14, 14, 28, 0.95) !important;
+        border: 1px solid rgba(6, 182, 212, 0.45) !important;
+        backdrop-filter: blur(20px) !important;
+        -webkit-backdrop-filter: blur(20px) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 20px rgba(6, 182, 212, 0.25) !important;
+    }
+    div[data-baseweb="popover"] li,
+    div[data-baseweb="popover"] li *,
+    div[data-baseweb="popover"] span,
+    div[data-baseweb="popover"] div,
+    ul[data-testid="stSelectboxVirtualDropdown"] li,
+    ul[data-testid="stSelectboxVirtualDropdown"] li *,
+    ul[role="listbox"] li,
+    ul[role="listbox"] li *,
+    li[role="option"],
+    li[role="option"] * {
+        background: transparent !important;
+        background-color: transparent !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        letter-spacing: 0.6px !important;
+        padding: 10px 14px !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-baseweb="popover"] li:hover,
+    ul[data-testid="stSelectboxVirtualDropdown"] li:hover,
+    ul[role="listbox"] li:hover,
+    li[role="option"]:hover,
+    li[aria-selected="true"] {
+        background: rgba(6, 182, 212, 0.35) !important;
+        background-color: rgba(6, 182, 212, 0.35) !important;
+        color: #ffffff !important;
+        -webkit-text-fill-color: #ffffff !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -265,30 +473,34 @@ if "component_key" not in st.session_state:
 # ----------------- HELPER FUNCTIONS -----------------
 def generate_text_to_speech(text, lang_code="en"):
     """
-    Generates a TTS audio response using gTTS (or mocks if offline)
+    Generates a TTS audio response using Microsoft Edge Neural voices (edge-tts).
     """
-    if not HAS_GTTS:
-        # Return a silent / mock response byte array
-        return b""
+    import tempfile
+    import os
+    from vay.tts.engine import speak
     
-    # Map input ISO lang_codes to gtts options
-    gtts_lang = "en"
-    if lang_code == "ta":
-        gtts_lang = "ta"
-    elif lang_code == "hi":
-        gtts_lang = "hi"
-        
-    try:
-        tts = gTTS(text=text, lang=gtts_lang, slow=False)
-        # Write to memory file
-        from io import BytesIO
-        fp = BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        return fp.read()
-    except Exception as e:
-        st.sidebar.error(f"TTS Generation Error: {e}")
+    if not text:
         return b""
+        
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    
+    try:
+        # Call the project's edge-tts wrapper (play=False because UI plays it)
+        speak(text, lang=lang_code, play=False, output_path=tmp_path)
+        
+        # Read the generated MP3 bytes
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"TTS generation error: {e}")
+        return b""
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
 
 def query_hybrid_rag(query_text):
     """
@@ -320,112 +532,159 @@ def query_hybrid_rag(query_text):
         
     return best_doc, best_score
 
-def run_multilingual_pipeline(user_query, detected_lang="en"):
-    """
-    Executes the logical pipeline defined in project_context.md
-    """
-    # 1. State: Thinking (ASR complete, now normalizing/cleanup)
-    time.sleep(0.5) # Simulate small latency
-    
-    # Normalize transcription (simulate LLM-based code-switch normalization)
-    normalized_query = user_query
-    # Simple mockup cleanup for Tanglish/Hinglish
-    if detected_lang == "ta" and "bill" in user_query.lower():
-        normalized_query = "எனது பில் விவரங்கள் என்ன?"
-    elif detected_lang == "hi" and "bill" in user_query.lower():
-        normalized_query = "मेरा बिल का विवरण क्या है?"
-        
-    # 2. Intent + Entity classification
-    intent = "General Query"
-    entities = {}
-    
-    query_lower = user_query.lower()
-    if any(k in query_lower for k in ["close", "cancel", "terminate", "deactivate", "delete", "மூடு", "बंद"]):
-        intent = "Restricted: Connection Termination"
-        action = "ESCALATE (Sensitive Intent)"
-    elif any(k in query_lower for k in ["bill", "charge", "dispute", "pay", "பில்", "बिल"]):
-        intent = "Billing Inquiry"
-        action = "RAG Search"
-    elif any(k in query_lower for k in ["plan", "unlimited", "roaming", "5g", "pack", "திட்டம்", "प्लान"]):
-        intent = "Plan Upgrade / Inquiry"
-        action = "RAG Search"
-    else:
-        intent = "General Help"
-        action = "RAG Search"
-        
-    # Route sensitive intents directly to human handoff (Gotcha §8)
-    if intent.startswith("Restricted"):
-        st.session_state.current_pipeline_data = {
-            "language": "Tamil" if detected_lang == "ta" else ("Hindi" if detected_lang == "hi" else "English"),
-            "route": "IndicConformer" if detected_lang in ["ta", "hi"] else "Whisper-v3-turbo",
-            "intent": intent,
-            "confidence": 0.99,
-            "raw_text": user_query,
-            "clean_text": normalized_query,
-            "action": "Escalate to Human Agent",
-            "entities": entities
-        }
-        escalate_session("Sensitive billing/account cancellation requested.")
-        return
-        
-    # 3. RAG Module: Query Operator Knowledge Base
-    best_doc, score = query_hybrid_rag(normalized_query)
-    
-    st.session_state.current_pipeline_data = {
-        "language": "Tamil" if detected_lang == "ta" else ("Hindi" if detected_lang == "hi" else "English"),
-        "route": "IndicConformer" if detected_lang in ["ta", "hi"] else "Whisper-v3-turbo",
-        "intent": intent,
-        "confidence": score,
-        "raw_text": user_query,
-        "clean_text": normalized_query,
-        "action": "RAG Retrieval",
-        "entities": entities
-    }
-    
-    # 4. Handoff check (Threshold τ ≈ 0.75 check)
-    retrieval_threshold = 0.65 # Empirically relaxed for mock keywords
-    if score < retrieval_threshold or best_doc is None:
-        escalate_session(f"Low retrieval confidence ({score} < {retrieval_threshold})")
-        return
-        
-    # 5. LLM Response Generation (grounded in retrieved context, in user's language)
-    response_text = ""
-    if detected_lang == "ta":
-        if best_doc["id"] == "KB001":
-            response_text = "சூப்பர் 5ஜி அன்லிமிட்டெட் திட்டம் மாதத்திற்கு 599 ரூபாய். இதில் அன்லிமிட்டெட் 5ஜி டேட்டா மற்றும் டிஸ்னி+ ஹாட்ஸ்டார் சந்தா உள்ளது."
-        elif best_doc["id"] == "KB002":
-            response_text = "சர்வதேச ரோமிங் திட்டம் 1499 ரூபாய் ஆகும். இது 28 நாட்களுக்கு செல்லுபடியாகும்."
-        else:
-            response_text = "உங்கள் பில் கட்டண முறையீடு 15 நாட்களுக்குள் பதிவு செய்யப்பட வேண்டும். கூடுதல் விவரங்களுக்கு எங்கள் ஏஜெண்டை தொடர்பு கொள்ளவும்."
-    elif detected_lang == "hi":
-        if best_doc["id"] == "KB001":
-            response_text = "सुपर 5G अनलिमिटेड प्लान की कीमत 599 रुपये प्रति माह है। इसमें अनलिमिटेड 5G डेटा और डिज़नी+ हॉटस्टार शामिल है।"
-        elif best_doc["id"] == "KB002":
-            response_text = "इंटरनेशनल रोमिंग पैक की कीमत 1499 रुपये है। यह 28 दिनों के लिए वैध है."
-        else:
-            response_text = "आपके बिल विवाद को 15 दिनों के भीतर दर्ज किया जाना चाहिए। 3 दिनों की अतिरिक्त छूट अवधि मिलती है।"
-    else: # English
-        if best_doc["id"] == "KB001":
-            response_text = "The Super 5G Unlimited Plan costs 599 rupees per month and includes unlimited 5G data plus Disney+ Hotstar."
-        elif best_doc["id"] == "KB002":
-            response_text = "The International Roaming Pack costs 1499 rupees, is valid for 28 days, and has 5GB roaming data."
-        else:
-            response_text = "Invoice disputes must be registered within 15 days. We provide a 3-day payment grace period."
+@st.cache_resource
+def get_asr_router():
+    return ASRRouter()
 
-    # Record history
-    st.session_state.chat_history.append({"speaker": "user", "text": user_query, "lang": detected_lang})
-    st.session_state.chat_history.append({"speaker": "assistant", "text": response_text, "lang": detected_lang})
-    
-    # 6. Generate TTS Response Audio
-    tts_bytes = generate_text_to_speech(response_text, lang_code=detected_lang)
-    
-    if tts_bytes:
-        st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
-        st.session_state.status = "speaking"
-    else:
-        st.session_state.status = "idle"
+@st.cache_resource
+def get_agent_graph():
+    return build_graph()
+
+# ----------------- BACKGROUND MODEL PRELOADING -----------------
+@st.cache_resource
+def trigger_background_preload():
+    import threading
+    import subprocess
+    def preload_models():
+        print("[Background Preload] Starting to load ASRRouter and LangGraph...")
+        get_asr_router()
+        get_agent_graph()
+        print("[Background Preload] Finished loading models!")
         
-    st.rerun()
+        # Seed customer database if needed
+        print("[Background Preload] Ensuring customer DB is seeded...")
+        try:
+            from vay.tools.db_queries import init_db
+            init_db()
+            print("[Background Preload] Customer DB ready!")
+        except Exception as e:
+            print(f"[Background Preload] DB seed error: {e}")
+        
+        print("[Background Preload] Triggering KB build in background...")
+        try:
+            subprocess.Popen(["uv", "run", "python", "scripts/build_kb.py"])
+        except Exception as e:
+            print(f"[Background Preload] Error starting KB build: {e}")
+            
+    threading.Thread(target=preload_models, daemon=True).start()
+    return True
+
+# Call it so it executes if it hasn't already for this server instance
+trigger_background_preload()
+
+def process_real_audio(base64_audio):
+    """
+    Decodes the browser's audio, runs it through ASRRouter -> LangGraph -> TTS.
+    """
+    print(f"\n--- [process_real_audio] Started! Base64 string length: {len(base64_audio)} ---")
+    try:
+        # 1. Decode base64 to WAV tensor
+        wav_bytes = decode_audio(base64_audio)
+        wav_io = io.BytesIO(wav_bytes)
+        audio_np, sr = sf.read(wav_io)
+        
+        if len(audio_np.shape) > 1:
+            audio_np = audio_np.mean(axis=1)
+        tensor_chunk = torch.from_numpy(audio_np).float()
+        
+        # 2. Route and Transcribe (ASR)
+        t_asr_start = time.time()
+        router = get_asr_router()
+        asr_result = router.route_and_transcribe(tensor_chunk)
+            
+        user_text = asr_result.raw_text
+        detected_lang = asr_result.detected_language
+        t_asr_end = time.time()
+        
+        print(f"[process_real_audio] STT: '{user_text}' (lang: {detected_lang}) [Took {t_asr_end - t_asr_start:.2f}s]")
+        
+        if not user_text.strip():
+            st.session_state.status = "idle"
+            st.rerun()
+            return
+            
+        # 3. LangGraph Orchestrator (RAG + Agent)
+        t_graph_start = time.time()
+        graph = get_agent_graph()
+        
+        # Ensure session exists
+        if "agent_session" not in st.session_state:
+            st.session_state.agent_session = SessionContext(
+                phone_number=st.session_state.phone_number,
+                verified=True,
+                language=detected_lang
+            )
+        if "agent_history" not in st.session_state:
+            st.session_state.agent_history = []
+            
+        st.session_state.agent_session.language = detected_lang
+            
+        state: GraphState = {
+            "phone_number": st.session_state.phone_number,
+            "language": detected_lang,
+            "transcript": user_text,
+            "conversation_history": st.session_state.agent_history,
+            "show_debug": False,
+            "min_similarity": 0.3,
+            "session": st.session_state.agent_session,
+        }
+        
+        print("[process_real_audio] Invoking LangGraph...")
+        result_state = graph.invoke(state)
+        t_graph_end = time.time()
+        
+        # Extract reply
+        reply = result_state.get("final_reply") or "Transferring you to an agent."
+        print(f"[process_real_audio] Agent Reply: {reply} [Took {t_graph_end - t_graph_start:.2f}s]")
+        
+        # 4. Update History
+        st.session_state.agent_history.append(HumanMessage(content=user_text))
+        st.session_state.agent_history.append(AIMessage(content=reply))
+        st.session_state.agent_history = trim_history(st.session_state.agent_history, 6)
+        
+        # 5. Update UI Pipeline Data
+        st.session_state.current_pipeline_data = {
+            "language": detected_lang,
+            "route": asr_result.model_used,
+            "intent": result_state.get("routed_agent", "Orchestrator"),
+            "confidence": round(asr_result.confidence, 2),
+            "raw_text": user_text,
+            "clean_text": user_text,
+            "action": "Handoff" if result_state.get("handoff") else "Completed",
+            "entities": {}
+        }
+        
+        # 6. Chat History UI
+        st.session_state.chat_history.append({"speaker": "user", "text": user_text, "lang": detected_lang})
+        st.session_state.chat_history.append({"speaker": "assistant", "text": reply, "lang": detected_lang})
+        
+        # 7. Check for call termination
+        if result_state.get("call_end_requested") or result_state.get("handoff"):
+            st.session_state.pending_handoff = True
+            # Proceed to TTS generation below so the user hears the goodbye/handoff message FIRST
+            
+        # 8. Generate TTS
+        t_tts_start = time.time()
+        print("[process_real_audio] Generating TTS...")
+        tts_bytes = generate_text_to_speech(reply, lang_code=detected_lang)
+        t_tts_end = time.time()
+        print(f"[process_real_audio] TTS Generated [Took {t_tts_end - t_tts_start:.2f}s]")
+        
+        if tts_bytes:
+            st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
+            st.session_state.status = "speaking"
+        else:
+            st.session_state.status = "idle"
+            
+        print("[process_real_audio] Done! Triggering rerun.")
+        st.rerun()
+        
+    except Exception as e:
+        print(f"[process_real_audio] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        st.session_state.status = "idle"
+        st.rerun()
 
 def escalate_session(reason):
     """
@@ -457,6 +716,19 @@ def escalate_session(reason):
     st.session_state.current_pipeline_data["action"] = f"Escalated ({reason})"
     st.rerun()
 
+# ----------------- GLOBAL INTERACTIVE FLUID SPLASH CURSOR -----------------
+# Render interactive React Bits SplashCursor component
+splash_cursor_component(
+    density_dissipation=5.0,
+    velocity_dissipation=8.5,
+    pressure=0.05,
+    splat_radius=0.05,
+    shading=False,
+    rainbow_mode=True,
+    color="#7c1ed6",
+    key="global_splash_cursor"
+)
+
 # ----------------- MAIN LAYOUT ROUTING -----------------
 if not st.session_state.session_started:
     # Render pure white Galaxy WebGL background from React Bits
@@ -485,13 +757,13 @@ if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
     _, login_col, _ = st.columns([1, 1.4, 1])
     with login_col:
-        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 145px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
+        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 200px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
         st.markdown(f"""
-        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 20px 50px rgba(0, 0, 0, 0);">
+        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 0px rgba(0, 0, 0, 0);">
             {img_html}
-            <h1 style="margin-top: 0; font-weight: 800; font-size: 28px; background: linear-gradient(135deg, #f97316, #a855f7, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: 1.5px;">VAY ASSISTANT</h1>
-            <p style="color: #cbd5e1; font-size: 14px; margin-top: 6px; margin-bottom: 0; letter-spacing: 0.3px;">Next-Gen Multilingual Voice Operator Portal</p>
-            <p style="color: #64748b; font-size: 12px; margin-top: 4px; margin-bottom: 20px;">Powered by Real-Time Neural Speech & Hybrid RAG</p>
+            <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px; padding-left: 15px;">VAY</h1>
+            <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: 8px; margin-bottom: 0; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
+           
         </div>
         """, unsafe_allow_html=True)
         
@@ -510,24 +782,49 @@ if not st.session_state.session_started:
                 placeholder="Enter 10-digit mobile number"
             )
             
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.button("Start Session", type="primary", use_container_width=True):
-                # Validation rules
-                if not phone_input:
-                    st.warning("⚠️ Please enter your phone number.")
-                elif not phone_input.isdigit():
-                    st.error("❌ Phone number must contain only numeric digits.")
-                elif len(phone_input) != 10:
-                    st.error(f"❌ Phone number must be exactly 10 digits (current length: {len(phone_input)}).")
-                else:
-                    selected_code = country_code.split(" ")[0]
-                    st.session_state.phone_number = f"{selected_code} {phone_input}"
-                    st.session_state.component_key += 1 # Force fresh component instance
-                    st.session_state.session_started = True
-                    st.success("✅ Session started successfully!")
-                    time.sleep(0.6)
-                    st.rerun()
+            # Render SpecularButton component from React Bits
+            start_btn_event = specular_button(
+                label="Start Session",
+                size="md",
+                radius=60,
+                tint="#7c3aed",
+                tintOpacity=0.0,
+                blur=0,
+                textColor="#ffffff",
+                lineColor="#60EFFF",
+                baseColor="#7c3aed",
+                intensity=3.5,
+                shineSize=35,
+                shineFade=48,
+                thickness=1.4,
+                speed=0.35,
+                followMouse=True,
+                proximity=250,
+                autoAnimate=False,
+                fullWidth=False,
+                key=f"start_session_btn_{st.session_state.component_key}"
+            )
+
+            if start_btn_event is not None and start_btn_event.get("event") == "click":
+                event_id = start_btn_event.get("id")
+                if event_id and event_id != st.session_state.get("last_processed_event_id"):
+                    st.session_state.last_processed_event_id = event_id
+
+                    # Validation rules
+                    if not phone_input:
+                        st.warning("⚠️ Please enter your phone number.")
+                    elif not phone_input.isdigit():
+                        st.error("❌ Phone number must contain only numeric digits.")
+                    elif len(phone_input) != 10:
+                        st.error(f"❌ Phone number must be exactly 10 digits (current length: {len(phone_input)}).")
+                    else:
+                        selected_code = country_code.split(" ")[0]
+                        st.session_state.phone_number = f"{selected_code} {phone_input}"
+                        st.session_state.component_key += 1 # Force fresh component instance
+                        st.session_state.session_started = True
+                        st.success("✅ Session started successfully!")
+                        time.sleep(0.6)
+                        st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 else:
     # Hide sidebar and side tab controls completely on the session page
@@ -549,9 +846,9 @@ else:
     # Render Aurora WebGL background with authentic Northern Lights colors
     aurora_component(
         colorStops=["#00FF87", "#60EFFF", "#7C3AED"],
-        amplitude=1.0,
-        blend=0.55,
-        speed=0.45,
+        amplitude=0.25,
+        blend=0.75,
+        speed=0.25,
         key="aurora_session_bg"
     )
 
@@ -703,7 +1000,17 @@ else:
         if event_id and event_id != st.session_state.get("last_processed_event_id"):
             st.session_state.last_processed_event_id = event_id
 
-            if event_name == "mic_start":
+            if event_name == "AUDIO_ENDED":
+                if st.session_state.status == "speaking":
+                    if st.session_state.get("pending_handoff"):
+                        st.session_state.status = "handoff"
+                        st.session_state.pending_handoff = False
+                    else:
+                        st.session_state.status = "listening"
+                    st.session_state.component_key += 1
+                    st.rerun()
+
+            elif event_name == "mic_start":
                 if st.session_state.status != "listening":
                     st.session_state.status = "listening"
                     st.session_state.audio_to_play = None
@@ -717,13 +1024,13 @@ else:
 
             elif event_name == "audio_recorded":
                 st.session_state.status = "thinking"
-                import random
-                simulated_query = random.choice(current_accent_data["queries"])
-                run_multilingual_pipeline(simulated_query, detected_lang=current_accent_data["lang"])
+                base64_audio = event_data.get("audio")
+                if base64_audio:
+                    process_real_audio(base64_audio)
 
             elif event_name == "audio_finished":
-                if st.session_state.status != "idle":
-                    st.session_state.status = "idle"
+                if st.session_state.status != "listening":
+                    st.session_state.status = "listening"
                     st.session_state.audio_to_play = None
                     st.rerun()
 
@@ -735,5 +1042,3 @@ else:
                 st.session_state.audio_to_play = None
                 st.session_state.component_key += 1
                 st.rerun()
-
-
