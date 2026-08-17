@@ -36,22 +36,12 @@ GROQ_MODEL=openai/gpt-oss-20b
 or llama-3.1-8b-instant
 ```
 
-### 4. Initialize Database
+### 4. Setup and Run
+
+Run the master setup script, which automatically initializes the database, builds the knowledge base, caches the required ASR models, and launches the app!
 
 ```powershell
-uv run python scripts/manage_db.py
-```
-
-### 5. Build Knowledge Base
-
-```powershell
-uv run python scripts/build_kb.py
-```
-
-### 6. Run
-
-```powershell
-uv run python scripts/run_assistant.py --phone 9876543210 --language en
+uv run python scripts/setup_app.py
 ```
 
 Debug mode:
