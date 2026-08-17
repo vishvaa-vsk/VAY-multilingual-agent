@@ -265,6 +265,29 @@ _SCRIPT_RANGES: dict[str, tuple[int, int]] = {
 }
 
 
+
+# Human-readable names for the translation-retry prompt. A bare ISO code
+# ("ta") leaves room for a small model to guess the wrong language --
+# spelling it out removes the ambiguity that let a Tamil ("ta") session
+# come back translated into Bengali in practice.
+_LANGUAGE_NAMES: dict[str, str] = {
+    "hi": "Hindi",
+    "mr": "Marathi",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "gu": "Gujarati",
+    "pa": "Punjabi (Gurmukhi script)",
+    "bn": "Bengali",
+    "ur": "Urdu",
+    "ar": "Arabic",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese (Simplified)",
+}
+
+
 def _script_conforms(text: str, language: str) -> bool:
     """True if *text* contains at least one character in *language*'s script, or if
     *language* has no script mapping here (e.g. "en", or a Latin-script language not
@@ -281,17 +304,18 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
     if not reply or language == "en" or _script_conforms(reply, language):
         return reply
     print(f"  [LanguageGuard] reply not in expected script for '{language}' -- forcing translation")
+    language_name = _LANGUAGE_NAMES.get(language, language)
     try:
         translated = _timed_invoke(
             llm,
             [
                 SystemMessage(
                     content=(
-                        f"Translate the following customer-support reply into {language}. "
-                        "Keep telecom terms in English as customers naturally hear them "
-                        "(data, plan, validity, recharge, balance, calls, SMS, OTP, SIM, "
-                        "eSIM, VoLTE, 4G, 5G, brand/plan names). Output ONLY the translated "
-                        "reply, nothing else -- no preamble, no quotes."
+                        f"Translate the following customer-support reply into {language_name} "
+                        f"(ISO code: {language}). Keep telecom terms in English as customers "
+                        "naturally hear them (data, plan, validity, recharge, balance, calls, "
+                        "SMS, OTP, SIM, eSIM, VoLTE, 4G, 5G, brand/plan names). Output ONLY the "
+                        "translated reply, nothing else -- no preamble, no quotes."
                     )
                 ),
                 HumanMessage(content=reply),
@@ -303,7 +327,20 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
         return reply
     if show_debug:
         print(f"  [LanguageGuard] translated -> {translated[:200]}")
-    return _detoxify_repetition(translated) or reply
+
+    result = _detoxify_repetition(translated) or reply
+    # Backstop: the retry itself is just another LLM call and can miss too
+    # (e.g. translating "ta" -> Bengali instead of Tamil). Don't ship an
+    # unverified guess -- if it still isn't in the right script, keep the
+    # original (English) reply, which is at least a known, understandable
+    # state, rather than a silently wrong language going to TTS.
+    if not _script_conforms(result, language):
+        print(
+            f"  [LanguageGuard] translation retry still not in expected script for "
+            f"'{language}' -- keeping original reply"
+        )
+        return reply
+    return result
 
 
 # ---------------------------------------------------------------------------

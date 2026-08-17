@@ -207,9 +207,17 @@ def speak(
     # Script-aware safeguard: If the LLM returned Tamil/Hindi/Indic Unicode text,
     # ensure we pick the correct native neural voice rather than an English voice
     # which would otherwise pronounce the Unicode characters as numbers/gibberish.
+    #
+    # The Devanagari check below excludes U+0964/U+0965 (danda / double danda,
+    # "\u0964"/"\u0965") on purpose: those punctuation marks live in the Devanagari
+    # Unicode block but are reused as the sentence-ending mark by several
+    # *other* Indic scripts too (Bengali, Gujarati, Odia, ...). Matching on
+    # them alone previously misfired "hi" for any non-Hindi Indic sentence
+    # that happened to end with one, even with zero actual Devanagari letters
+    # present.
     if re.search(r"[\u0b80-\u0bff]", text):
         effective_lang = "ta"
-    elif re.search(r"[\u0900-\u097f]", text):
+    elif re.search(r"[\u0900-\u0963\u0966-\u097f]", text):
         effective_lang = "hi"
     elif re.search(r"[\u0c00-\u0c7f]", text):
         effective_lang = "te"
