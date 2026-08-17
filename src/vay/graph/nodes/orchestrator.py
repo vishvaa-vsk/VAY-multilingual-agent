@@ -407,7 +407,7 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
     _t_subagent_start = _time.time()
     print(f"  [SubAgent] route={route} | normalized_query={state['normalized_query'][:120]}")
     
-    reply = run_tool_agent(
+    reply, degraded = run_tool_agent(
         llm,
         domain_tools + [rag_tool],
         SUBAGENT_SYSTEM_PROMPT_TEMPLATE.format(
@@ -421,7 +421,7 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
         language=state["language"],
         show_debug=state.get("show_debug", False),
     )
-    
+
     _t_subagent_end = _time.time()
     print(f"  [SubAgent] RAG tracker: called={tracker.called} | last_score={tracker.last_score:.2f}" if tracker.called else f"  [SubAgent] RAG tracker: called=False | last_score=N/A")
     print(f"  [SubAgent] Took {_t_subagent_end - _t_subagent_start:.2f}s")
@@ -431,6 +431,14 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
         "retrieval_score": tracker.last_score if tracker.called else 1.0,
         # no RAG call needed → don't penalize the confidence gate
     }
+    # `degraded` means run_tool_agent gave up and returned a generic "let me connect you
+    # to a human" fallback (LLM call failed, or came back with nothing usable) rather than
+    # a real answer -- that fallback TEXT alone isn't enough for the guardrail/front end to
+    # know a handoff is actually happening (retrieval_score defaults to 1.0 here since no RAG
+    # call was made, so the confidence gate wouldn't catch it), so surface it explicitly.
+    if degraded:
+        result["handoff"] = True
+        result["handoff_reason"] = "Sub-agent tool-calling loop failed or produced no usable reply."
     if session.escalation_requested:
         result["handoff"] = True
         result["handoff_reason"] = session.escalation_reason or "Escalation requested by sub-agent."

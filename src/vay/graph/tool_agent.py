@@ -346,9 +346,18 @@ def run_tool_agent(
     history: list,
     language: str = "en",
     show_debug: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     """Minimal bounded tool-calling loop: LLM <-> tools until it stops calling
-    tools or MAX_TOOL_ITERATIONS is hit."""
+    tools or MAX_TOOL_ITERATIONS is hit.
+
+    Returns (reply, degraded) -- `degraded` is True whenever `reply` is one of the
+    generic HANDOFF_MESSAGE_TEMPLATES/TOOL_LOOP_FAILURE_TEMPLATES fallbacks (LLM call
+    failed outright, or came back with nothing usable) rather than a real answer. The
+    fallback TEXT alone used to be the only signal of this -- callers had no reliable,
+    language-independent way to tell "sub-agent genuinely answered" from "sub-agent gave
+    up and is punting to a human", so graph state's `handoff` flag never got set for
+    this path and the front end never learned the call needs to hand off (see caller).
+    """
     bound_llm = llm.bind_tools(tools)
     tools_by_name = {t.name: t for t in tools}
 
@@ -378,15 +387,20 @@ def run_tool_agent(
             # ever got a normal response back (e.g. calling an unregistered tool name) --
             # degrade to a safe, guardrail-recognized reply instead of crashing the call.
             print(f"  [ERROR] tool-calling LLM call failed, degrading to handoff: {e}")
-            return localized(TOOL_LOOP_FAILURE_TEMPLATES, language)
+            return localized(TOOL_LOOP_FAILURE_TEMPLATES, language), True
         messages.append(ai_msg)
 
         if not getattr(ai_msg, "tool_calls", None):
-            reply = (ai_msg.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
-            reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            raw_content = (ai_msg.content or "").strip()
+            degraded = not raw_content
+            reply = raw_content or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            detoxified = _detoxify_repetition(reply)
+            if not detoxified:
+                degraded = True
+            reply = detoxified or localized(HANDOFF_MESSAGE_TEMPLATES, language)
             reply = _enforce_language(reply, language, llm, show_debug)
             print(f"  [SubAgent] Final reply (len={len(reply)}): {reply[:200]}")
-            return reply
+            return reply, degraded
 
         if show_debug and (ai_msg.content or "").strip():
             # Some models emit reasoning/commentary text alongside tool_calls -- show it so a
@@ -441,7 +455,7 @@ def run_tool_agent(
             # testing showed a small model will happily claim "done" here if given the chance.
             result_str = str(result)
             if result_str.startswith("STOP_AND_SAY:"):
-                return result_str[len("STOP_AND_SAY:") :].strip()
+                return result_str[len("STOP_AND_SAY:") :].strip(), False
 
             messages.append(ToolMessage(content=result_str, tool_call_id=call["id"]))
 
@@ -460,12 +474,17 @@ def run_tool_agent(
         )
     )
     final = _timed_invoke(llm, messages, "forced wrap-up")
-    reply = (final.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
-    reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    raw_content = (final.content or "").strip()
+    degraded = not raw_content
+    reply = raw_content or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    detoxified = _detoxify_repetition(reply)
+    if not detoxified:
+        degraded = True
+    reply = detoxified or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     reply = _enforce_language(reply, language, llm, show_debug)
     if show_debug:
         print(f"  [LLM wrap-up reply] {reply}")
-    return reply
+    return reply, degraded
 
 
 # ---------------------------------------------------------------------------

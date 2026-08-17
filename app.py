@@ -22,7 +22,6 @@ from vay.ui.component_strands import strands_component
 from vay.ui.component_galaxy import galaxy_component
 from vay.ui.component_aurora import aurora_component
 from vay.ui.component_specular_button import specular_button
-from vay.ui.component_splash_cursor import splash_cursor_component
 
 import io
 import soundfile as sf
@@ -82,7 +81,8 @@ st.markdown("""
         visibility: hidden !important;
     }
     .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
     }
 
     /* Hide Streamlit heading anchor links/hyperlinks next to titles */
@@ -204,7 +204,7 @@ st.markdown("""
     /* 1. Country Code & Phone Number Labels (High Contrast Radiant Gradient) */
     div[data-testid="stSelectbox"] label p,
     div[data-testid="stTextInput"] label p {
-        background: linear-gradient(135deg, #fb923c, #c084fc, #38bdf8) !important;
+        background: linear-gradient(135deg,#38BDF8) !important;
         -webkit-background-clip: text !important;
         -webkit-text-fill-color: transparent !important;
         font-weight: 800 !important;
@@ -716,18 +716,6 @@ def escalate_session(reason):
     st.session_state.current_pipeline_data["action"] = f"Escalated ({reason})"
     st.rerun()
 
-# ----------------- GLOBAL INTERACTIVE FLUID SPLASH CURSOR -----------------
-# Render interactive React Bits SplashCursor component
-splash_cursor_component(
-    density_dissipation=5.0,
-    velocity_dissipation=8.5,
-    pressure=0.05,
-    splat_radius=0.05,
-    shading=False,
-    rainbow_mode=True,
-    color="#7c1ed6",
-    key="global_splash_cursor"
-)
 
 # ----------------- MAIN LAYOUT ROUTING -----------------
 if not st.session_state.session_started:
@@ -754,21 +742,18 @@ if not st.session_state.session_started:
             logo_b64 = base64.b64encode(img_f.read()).decode("utf-8")
 
     # Render premium landing screen with frosted glassmorphism over Galaxy
-    st.markdown("<br><br>", unsafe_allow_html=True)
     _, login_col, _ = st.columns([1, 1.4, 1])
     with login_col:
-        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 200px; height: auto; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5); border: 1px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
+        img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 400px; height: auto; border-radius: 0px; margin-bottom: 0px; box-shadow: 0 0px 0px rgba(0, 0, 0, 0.5); border: 0px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
         st.markdown(f"""
-        <div class="premium-card" style="text-align: center; padding: 35px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 0px rgba(0, 0, 0, 0);">
+        <div class="premium-card" style="text-align: center; padding: 0px 30px; margin-bottom: 0; background: rgba(14, 14, 20,0); border:0px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 0px rgba(0, 0, 0, 0);">
             {img_html}
-            <h1 style="margin-top: 0; font-weight: 900; font-size: 32px; background: linear-gradient(135deg, #ff8a3d, #c084fc, #38bdf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(192, 132, 252, 0.55)) drop-shadow(0 2px 8px rgba(0, 0, 0, 0.9)); letter-spacing: 2px; padding-left: 15px;">VAY</h1>
-            <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: 8px; margin-bottom: 0; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
-           
+            <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: -30px; margin-bottom: 10px; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         with st.container():
-            st.markdown("<div style='padding: 24px; background: rgba(0, 0, 0, 0); border: 0px solid rgba(255,255,255,0); border-top: none; border-radius: 0 0 16px 16px; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 50px rgba(0, 0, 0, 0);'>", unsafe_allow_html=True)
+            st.markdown("<div style='padding: 0px 24px 24px 24px; background: rgba(0, 0, 0, 0); border: 0px solid rgba(255,255,255,0); border-top: none; border-radius: 0 0 16px 16px; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 50px rgba(0, 0, 0, 0); margin-top: -15px;'>", unsafe_allow_html=True)
             
             country_code = st.selectbox(
                 "Country Code",
@@ -947,7 +932,6 @@ else:
         unsafe_allow_html=True
     )
 
-
     # ----------------- MAIN VOICE INTERFACE (full-width) -----------------
     # Load VAY logo
     _logo_b64 = ""
@@ -959,11 +943,15 @@ else:
 
     if _logo_b64:
         st.markdown(
-            f"<div style='text-align:center; margin-bottom:4px;'>"
+            f"<div style='text-align:center; margin-top:0px; margin-bottom:-80px;'>"
             f"<img src='data:image/png;base64,{_logo_b64}' "
-            f"style='width:160px; height:auto; border-radius:12px; "
-            f"box-shadow:0 6px 24px rgba(0,0,0,0.5); display:inline-block;'>"
-            f"</div>",
+            f"style='width:340px; height:auto; display:inline-block;'>"
+            f"</div>"
+            f"<style>"
+            f"div[data-testid='element-container']:has(iframe[title*='strands']) {{"
+            f"  margin-top: -80px !important;"
+            f"}}"
+            f"</style>",
             unsafe_allow_html=True
         )
     else:

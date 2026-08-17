@@ -323,25 +323,44 @@ def _llm_candidates() -> list[tuple[str, str, str, str | None]]:
 
 
 def _is_failover_error(exc: Exception) -> bool:
-    """True for errors worth switching provider/model over (rate limit, server-side failure) --
-    NOT for a request-shaped error (e.g. an unregistered tool name) that would fail identically
-    on any backend, where switching would just burn through candidates for no reason."""
+    """True for errors worth switching provider/model over (rate limit, server-side failure, or
+    a bad/decommissioned model on THIS candidate) -- NOT for a request-shaped error (e.g. an
+    unregistered tool name) that would fail identically on any backend, where switching would
+    just burn through candidates for no reason."""
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(getattr(exc, "response", None), "status_code", None)
+    text = str(exc).lower()
+    # "model not found" (bad/decommissioned model string) is a property of THIS candidate's
+    # configured model, not something every backend would hit identically -- unlike e.g. a
+    # malformed tool schema, so it's still worth trying the next candidate over.
+    if "model_not_found" in text or "does not exist" in text:
+        return True
     if isinstance(status, int):
         return status == 429 or status >= 500
-    text = str(exc).lower()
     return "429" in text or "rate_limit" in text or "rate limit" in text
+
+
+# reasoning_effort accepts different vocab per model family on Groq (and plenty of models --
+# e.g. llama-3.x, Prompt Guard -- don't accept it at all, 400ing if it's sent). Map the model
+# name (prefix match) to the low-latency-appropriate value for its family; a candidate not
+# listed here gets no reasoning_effort kwarg at all rather than risk a 400 up front.
+_REASONING_EFFORT_BY_MODEL_PREFIX: list[tuple[str, str]] = [
+    ("openai/gpt-oss", "low"),  # gpt-oss: low/medium/high; low keeps latency down for realtime voice
+    ("qwen/qwen3", "none"),  # qwen3.x: default/none; none = non-thinking mode, fastest
+]
 
 
 def _build_candidate_llm(candidate: tuple[str, str, str, str | None], **kwargs: Any) -> Any:
     label, api_key, model, base_url = candidate
     if base_url is None:
-        # reasoning_effort="low" -- gpt-oss models are reasoning models; low keeps latency down
-        # for a real-time voice assistant (Groq defaults to "medium" if unset). Groq-specific,
-        # so only passed on the native-Groq branch.
-        return ChatGroq(model=model, api_key=api_key, reasoning_effort="low", **kwargs)
+        reasoning_effort = next(
+            (value for prefix, value in _REASONING_EFFORT_BY_MODEL_PREFIX if model.startswith(prefix)),
+            None,
+        )
+        if reasoning_effort is not None:
+            kwargs = {**kwargs, "reasoning_effort": reasoning_effort}
+        return ChatGroq(model=model, api_key=api_key, **kwargs)
     return ChatOpenAI(model=model, api_key=api_key, base_url=base_url, **kwargs)
 
 
