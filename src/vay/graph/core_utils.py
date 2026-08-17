@@ -39,10 +39,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from datetime import UTC, datetime
+from typing import Any
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 
 load_dotenv(override=True)  # picks up .env in the current/parent directory (GROQ_API_KEY, GROQ_MODEL)
 
@@ -259,23 +262,150 @@ AFFIRMATION_PATTERN = re.compile(r"\byes\b", re.IGNORECASE)
 NEGATION_PATTERN = re.compile(r"\bno\b", re.IGNORECASE)
 
 
-def _llm() -> ChatGroq:
-    if not GROQ_API_KEY:
+# ---------------------------------------------------------------------------
+# Multi-provider sticky failover
+# ---------------------------------------------------------------------------
+# A single Groq account's TPM cap is one shared budget -- a burst of calls in one customer turn
+# (orchestrator + multi-iteration sub-agent tool loop + language-guard retry) can trip it even
+# after cutting prompt size (see the SUBAGENT_SYSTEM_PROMPT_TEMPLATE/ORCHESTRATOR_SYSTEM_PROMPT
+# compression above). Rather than silently sleeping through Groq's own retry/backoff on every
+# 429 (max_retries -- the original cause of the 30s+ stalls), keep an ordered list of LLM
+# candidates -- possibly entirely different providers/models -- and STICK to whichever one last
+# succeeded. On a 429/5xx, switch to the next candidate and stay there process-wide for every
+# subsequent call (not just the one that failed), instead of re-hitting an exhausted candidate
+# on every future turn.
+#
+# Add a candidate by adding an entry below + the matching env vars. `base_url=None` means
+# "native Groq API" (langchain_groq.ChatGroq); any other base_url is treated as an OpenAI-
+# compatible endpoint (langchain_openai.ChatOpenAI) -- this covers OpenRouter and most other
+# providers with no provider-specific code, so a new fallback isn't limited to Groq or to
+# literal OpenAI models.
+# Each entry is a provider FAMILY, not a single candidate: the unsuffixed env vars (GROQ_API_KEY/
+# GROQ_MODEL) are that family's slot #1, and _2/_3/... suffixes (GROQ_API_KEY_2/GROQ_MODEL_2,
+# GROQ_API_KEY_3/GROQ_MODEL_3, ...) add further candidates from the SAME family -- e.g. a second
+# or third Groq account to fail over to when the first is rate-limited -- purely by adding env
+# vars, no code change needed. Note: this only adds real capacity if each numbered key is a
+# genuinely separate account/org; Groq's rate limits are scoped per-organization, so multiple
+# keys generated from the SAME account share one quota pool and switching between them won't help.
+_FAILOVER_CANDIDATES_SPEC: list[tuple[str, str, str, str | None]] = [
+    # (label, api_key env var PREFIX, model env var PREFIX, base_url or None for native Groq)
+    # This one entry already auto-discovers GROQ_API_KEY_2, _3, _4, ... from .env on its own
+    # (see _llm_candidates()) -- no need for separate groq2/groq3/groq4 entries here.
+    ("groq", "GROQ_API_KEY", "GROQ_MODEL", None),
+]
+
+_failover_lock = threading.Lock()
+_failover_state = {"idx": 0}  # sticky candidate index, shared process-wide across all callers
+
+
+def _llm_candidates() -> list[tuple[str, str, str, str | None]]:
+    """Resolve configured (label, api_key, model, base_url) candidates from the environment,
+    expanding each family in _FAILOVER_CANDIDATES_SPEC into its numbered slots (slot #1 =
+    unsuffixed vars, then _2, _3, ... until a suffix's api-key var is unset). Overall list order
+    = failover priority: every slot of family 1 before any slot of family 2, etc."""
+    candidates = []
+    for label, key_prefix, model_prefix, base_url in _FAILOVER_CANDIDATES_SPEC:
+        idx = 1
+        while True:
+            suffix = "" if idx == 1 else f"_{idx}"
+            api_key = os.environ.get(f"{key_prefix}{suffix}")
+            if not api_key:
+                break
+            model = (
+                os.environ.get(f"{model_prefix}{suffix}")
+                or os.environ.get(model_prefix)
+                or GROQ_MODEL
+            )
+            cand_label = label if idx == 1 else f"{label}_{idx}"
+            candidates.append((cand_label, api_key, model, base_url))
+            idx += 1
+    return candidates
+
+
+def _is_failover_error(exc: Exception) -> bool:
+    """True for errors worth switching provider/model over (rate limit, server-side failure) --
+    NOT for a request-shaped error (e.g. an unregistered tool name) that would fail identically
+    on any backend, where switching would just burn through candidates for no reason."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status == 429 or status >= 500
+    text = str(exc).lower()
+    return "429" in text or "rate_limit" in text or "rate limit" in text
+
+
+def _build_candidate_llm(candidate: tuple[str, str, str, str | None], **kwargs: Any) -> Any:
+    label, api_key, model, base_url = candidate
+    if base_url is None:
+        # reasoning_effort="low" -- gpt-oss models are reasoning models; low keeps latency down
+        # for a real-time voice assistant (Groq defaults to "medium" if unset). Groq-specific,
+        # so only passed on the native-Groq branch.
+        return ChatGroq(model=model, api_key=api_key, reasoning_effort="low", **kwargs)
+    return ChatOpenAI(model=model, api_key=api_key, base_url=base_url, **kwargs)
+
+
+class _FailoverLLM:
+    """Drop-in stand-in for a single chat-model instance -- exposes the .bind_tools()/.invoke()
+    surface run_tool_agent() and the graph nodes actually use -- that transparently fails over
+    across `_llm_candidates()` on 429/5xx, sticky per the module-level `_failover_state`."""
+
+    def __init__(self, candidates: list, tools: list | None = None, **llm_kwargs: Any):
+        self._candidates = candidates
+        self._llm_kwargs = llm_kwargs
+        self._tools = tools
+
+    def bind_tools(self, tools: list) -> "_FailoverLLM":
+        return _FailoverLLM(self._candidates, tools=tools, **self._llm_kwargs)
+
+    def invoke(self, messages: list) -> Any:
+        if not self._candidates:
+            raise RuntimeError("No LLM candidates configured (no *_API_KEY env var is set).")
+        with _failover_lock:
+            start_idx = _failover_state["idx"] % len(self._candidates)
+        last_exc: Exception | None = None
+        for offset in range(len(self._candidates)):
+            idx = (start_idx + offset) % len(self._candidates)
+            candidate = self._candidates[idx]
+            try:
+                llm = _build_candidate_llm(candidate, **self._llm_kwargs)
+                if self._tools is not None:
+                    llm = llm.bind_tools(self._tools)
+                result = llm.invoke(messages)
+                if offset:
+                    with _failover_lock:
+                        _failover_state["idx"] = idx
+                    print(f"  [LLM failover] switched to '{candidate[0]}' ({candidate[2]}) -- staying here")
+                return result
+            except Exception as e:
+                last_exc = e
+                if not _is_failover_error(e):
+                    raise
+                print(f"  [LLM failover] '{candidate[0]}' failed ({e}) -- trying next candidate")
+        assert last_exc is not None
+        raise last_exc
+
+
+def _llm() -> Any:
+    candidates = _llm_candidates()
+    if not candidates:
         raise SystemExit(
-            "ERROR: GROQ_API_KEY environment variable is not set.\n"
+            "ERROR: no LLM provider configured.\n"
+            "  Set GROQ_API_KEY (Groq) and/or OPENROUTER_API_KEY (OpenRouter) in .env\n"
             "  Windows:  set GROQ_API_KEY=your_key_here\n"
             "  bash:     export GROQ_API_KEY=your_key_here"
         )
-    # max_retries gives Groq-side 429/5xx retry/back-off for free (P0 reliability fix).
-    # reasoning_effort="low" -- gpt-oss models are reasoning models; low keeps latency down
-    # for a real-time voice assistant (Groq defaults to "medium" if unset).
-    return ChatGroq(
-        model=GROQ_MODEL,
-        api_key=GROQ_API_KEY,
-        temperature=0.2,
-        max_retries=3,
-        reasoning_effort="low",
-    )
+    # max_retries is 0 whenever there's a fallback to switch to: with 2+ candidates, our own
+    # failover loop above IS the retry strategy across providers, and it has NO sleep between
+    # candidates -- it moves on the instant a call raises. Any per-candidate max_retries > 0
+    # would instead let the underlying SDK retry that SAME candidate first -- and it doesn't do
+    # generic exponential backoff, it reads the server's own suggested wait time and sleeps
+    # THAT long (see the original 30s-stall bug, and Groq's own "Please try again in 8m56s" on a
+    # daily-quota 429) before our code ever gets a chance to switch. With only 1 candidate
+    # configured, keep the old retry count as the sole safety net since there's nothing to fail
+    # over to anyway.
+    max_retries = 0 if len(candidates) > 1 else 3
+    return _FailoverLLM(candidates, temperature=0.2, max_retries=max_retries)
 
 
 # ---------------------------------------------------------------------------

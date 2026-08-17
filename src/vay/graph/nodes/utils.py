@@ -268,6 +268,7 @@ def route_after_orchestrator(state: GraphState) -> str:
     2. Warning (1st aggressive offence) → warning node
     3. Normal call end requested → closing
     4. Sensitive intent → human_handoff
+    4b. LLM unavailable (every failover candidate failed this turn) → human_handoff
     5. Chitchat (understood, nothing actionable) → chitchat node
     6. Unclear/low-confidence (with escalation) → human_handoff
     7. Unclear/low-confidence (first time) → clarify
@@ -285,6 +286,12 @@ def route_after_orchestrator(state: GraphState) -> str:
         return "closing"
 
     if state.get("sensitive"):
+        return "human_handoff"
+
+    # Every LLM failover candidate failed outright this turn -- there's no real NLU result to
+    # route on (route/confidence/sensitive are just the "unclear" fallback defaults). Escalate
+    # honestly instead of clarify_node's "I didn't catch that", which would be false here.
+    if state.get("llm_unavailable"):
         return "human_handoff"
 
     if state.get("route") == "chitchat":

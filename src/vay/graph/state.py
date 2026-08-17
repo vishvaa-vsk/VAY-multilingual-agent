@@ -131,6 +131,10 @@ class GraphState(TypedDict, total=False):
     final_reply: str
     handoff: bool
     handoff_reason: str
+    llm_unavailable: bool  # set by orchestrator_node when every LLM failover candidate failed
+    # outright this turn (vs. a real response the orchestrator just couldn't parse) -- routes
+    # straight to human_handoff instead of clarify_node, since asking the customer to repeat
+    # themselves is misleading when their speech was never the problem.
     unclear_escalate: bool  # set by orchestrator_node: an unclear/low-confidence turn that has
     # repeated enough times (or an explicit human request) to justify
     # skipping the clarify re-prompt and handing off directly

@@ -42,6 +42,7 @@ dependencies = [
     "streamlit",
     "gtts",
     "watchdog",
+    "langchain-openai>=1.5.1",
 ]
 
 [dependency-groups]
