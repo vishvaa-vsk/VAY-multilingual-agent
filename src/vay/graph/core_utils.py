@@ -267,7 +267,15 @@ def _llm() -> ChatGroq:
             "  bash:     export GROQ_API_KEY=your_key_here"
         )
     # max_retries gives Groq-side 429/5xx retry/back-off for free (P0 reliability fix).
-    return ChatGroq(model=GROQ_MODEL, api_key=GROQ_API_KEY, temperature=0.2, max_retries=3)
+    # reasoning_effort="low" -- gpt-oss models are reasoning models; low keeps latency down
+    # for a real-time voice assistant (Groq defaults to "medium" if unset).
+    return ChatGroq(
+        model=GROQ_MODEL,
+        api_key=GROQ_API_KEY,
+        temperature=0.2,
+        max_retries=3,
+        reasoning_effort="low",
+    )
 
 
 # ---------------------------------------------------------------------------

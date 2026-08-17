@@ -48,6 +48,7 @@ def _get_llm():
                 api_key=_GROQ_API_KEY,
                 temperature=0.1,
                 max_retries=2,
+                reasoning_effort="low",
             )
         except Exception:
             return None
