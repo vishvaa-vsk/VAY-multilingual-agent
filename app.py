@@ -34,6 +34,7 @@ from vay.graph.workflow import build_graph
 from vay.tools.session import SessionContext
 from vay.graph.utils import trim_history
 
+
 # Ensure page config is set first
 st.set_page_config(
     page_title="VAY Voice Assistant For You",
@@ -81,7 +82,8 @@ st.markdown("""
         visibility: hidden !important;
     }
     .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
     }
 
     /* Hide Streamlit heading anchor links/hyperlinks next to titles */
@@ -741,7 +743,6 @@ if not st.session_state.session_started:
             logo_b64 = base64.b64encode(img_f.read()).decode("utf-8")
 
     # Render premium landing screen with frosted glassmorphism over Galaxy
-    st.markdown("<br>", unsafe_allow_html=True)
     _, login_col, _ = st.columns([1, 1.4, 1])
     with login_col:
         img_html = f'<img src="data:image/png;base64,{logo_b64}" style="width: 400px; height: auto; border-radius: 0px; margin-bottom: 0px; box-shadow: 0 0px 0px rgba(0, 0, 0, 0.5); border: 0px solid rgba(255,255,255,0.15); display: inline-block;">' if logo_b64 else '<div style="font-size: 38px; margin-bottom: 8px;">🌌</div>'
@@ -926,8 +927,33 @@ else:
         unsafe_allow_html=True
     )
 
+    # ----------------- MAIN VOICE INTERFACE (full-width) -----------------
+    # Load VAY logo
+    _logo_b64 = ""
+    _logo_path = os.path.join(os.path.dirname(__file__), "assets", "vay_logo.png")
+    if os.path.exists(_logo_path):
+        import base64 as _b64
+        with open(_logo_path, "rb") as _lf:
+            _logo_b64 = _b64.b64encode(_lf.read()).decode("utf-8")
 
-
+    if _logo_b64:
+        st.markdown(
+            f"<div style='text-align:center; margin-top:0px; margin-bottom:-80px;'>"
+            f"<img src='data:image/png;base64,{_logo_b64}' "
+            f"style='width:340px; height:auto; display:inline-block;'>"
+            f"</div>"
+            f"<style>"
+            f"div[data-testid='element-container']:has(iframe[title*='strands']) {{"
+            f"  margin-top: -80px !important;"
+            f"}}"
+            f"</style>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            "<h2 style='text-align:center; margin-bottom:0;'>🎙️ VAY - Voice Assistant for you</h2>",
+            unsafe_allow_html=True
+        )
 
     # Render Strands visualizer
     event_data = strands_component(
