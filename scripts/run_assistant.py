@@ -23,9 +23,16 @@ onward.
 SETUP
 -----
     pip install -r requirements.txt
-    python build_kb.py          # build the 5 Nexatel RAG collections
-    python customer_db.py       # seed the mock customer database
+    python scripts/build_kb.py    # one-time: build the 5 Nexatel RAG collections (idempotent
+                                   # upsert into ./chroma_db -- safe to re-run)
+    python scripts/manage_db.py   # one-time: create + seed the mock customer database
+                                   # (./src/vay/tools/nexatel_customers.db -- only seeds if
+                                   # empty; add --reset to wipe and reseed)
     set GROQ_API_KEY=your_key_here   (Windows)  /  export GROQ_API_KEY=...  (bash)
+
+    Neither this script nor run_voice.py builds or seeds these stores themselves -- they
+    only read from whatever already exists on disk, so the two commands above are run
+    once (or after a deliberate --reset), not on every launch.
 
 USAGE
 -----

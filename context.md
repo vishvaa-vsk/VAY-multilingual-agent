@@ -128,3 +128,60 @@ The frontend is prepared to be linked with the production-ready machine learning
 - Replace `gTTS` for Hindi and Tamil with the local `IndicF5` or `Indic-TTS` models:
   - Configure reference audio and reference transcript files for `IndicF5` to guide voice prosody.
   - Keep `gTTS` (or another lightweight TTS) as the Tier 2 general fallback for English.
+
+---
+
+## 4. Changes Made — Aug 17 Session (Handoff Call-Cut + Sub-Agent Latency)
+
+### 4.1 Human handoff now cuts the call and returns to the homepage automatically
+
+**File changed:** `app.py`
+
+**Before:** once the graph routed to human handoff, the app spoke the handoff message and then
+just sat in a `"handoff"` status ("Call Ended" shown in the WebGL component) — the Streamlit
+session (`session_started`, `chat_history`, `agent_history`, `agent_session`) stayed alive
+indefinitely with no automatic reset. Returning to the homepage required the customer to
+manually click the End Session button.
+
+**Fix:** in the `AUDIO_ENDED` event handler, when `pending_handoff` is set (i.e. the just-played
+reply was the handoff message), the app now performs the same reset the Cancel/End Session
+button triggers — clears `session_started`, `phone_number`, `chat_history`, `agent_history`, and
+drops `agent_session` — breaking the conversational chain and returning straight to the homepage
+with no manual click needed. The manual End Session handler (`end_session` / `escalate_click`
+events) was updated to clear `agent_history`/`agent_session` too, so both paths (automatic
+handoff and manual cancel) leave the session in the same clean state for the next call.
+
+### 4.2 Near-duplicate RAG query guard (sub-agent tool-calling loop latency)
+
+**File changed:** `src/vay/graph/tool_agent.py`
+
+**Symptom:** a single sub-agent turn took 118.75s and cost 4 sequential Groq LLM round-trips —
+3 tool calls to `search_product_catalog` with barely-reworded queries (`'travel plan recharge
+requirement postpaid'` → `'...postpaid travel add-on'` → `'Travel Pack recharge requirement'`,
+relevance 0.71 / 0.73 / 0.57) followed by the final answer generation. The existing
+`seen_calls` dedup (`graph/tool_agent.py`) only catches byte-identical `(tool_name, args)`
+repeats, so a small model rewording the same failed search slips through every time, each
+retry paying full Groq latency plus a growing system-prompt + history + RAG-context payload.
+
+**Fix:** added `_is_near_duplicate_query()` — a Jaccard token-overlap check (threshold 0.5) over
+the free-text `query` argument of tool calls, scoped per tool name (`seen_queries` dict). When a
+new query overlaps ≥50% of its tokens with any query already tried this turn for the same tool,
+it's treated like an exact repeat: the tool is not re-invoked, and the model gets a nudge message
+("you already searched for this or something very similar... use a meaningfully different query,
+or stop and answer with what you already have") instead of a fresh LLM+tool round-trip. Verified
+against the exact queries from the 118.75s trace above (`_is_near_duplicate_query` at threshold
+0.5 correctly flags the 3rd query as a near-duplicate of the 1st) and against `uv run pytest`
+(all 11 tests still pass — this only changes behavior when a near-duplicate query is detected).
+
+### 4.3 `test.md` corruption cleanup
+
+**File changed:** `test.md` (RAG pipeline test report)
+
+Fixed two classes of formatting corruption that had crept into the file (likely from a
+tab-eating paste): stray single-backtick lines that were meant to be triple-backtick code
+fences (architecture diagram, debug traces) now render as proper code blocks; and several
+words that had their first letter eaten by a stray tab character —
+`illing_policy`→`billing_policy`, `echnical_kb`→`technical_kb`, `ll-MiniLM`→`all-MiniLM`,
+`ool_use_failed`→`tool_use_failed`, `ool_agent.py`→`tool_agent.py`,
+`est_runner.py`/`est_results.jsonl`→`test_runner.py`/`test_results.jsonl`,
+`un_tests.ps1`→`run_tests.ps1`.
