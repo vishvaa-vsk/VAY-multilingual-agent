@@ -191,6 +191,106 @@ TOOL_LOOP_FAILURE_TEMPLATES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Language-conformance guard
+# ---------------------------------------------------------------------------
+#
+# SUBAGENT_SYSTEM_PROMPT_TEMPLATE (core_utils.py) instructs the LLM to "write your ENTIRE
+# final reply strictly in {language}", but a small model (llama-3.1-8b-instant) does not
+# reliably obey that -- it will silently answer in English even when {language} is "hi"/"ta"
+# and the customer's own turn was correctly detected in that language. Nothing previously
+# checked the OUTPUT actually landed in the right script before it went to TTS. This is a
+# deterministic, code-level backstop: for languages with a distinct Unicode script, verify
+# the reply actually contains at least one character from that script; if not, force one
+# translation-only retry (no tools, no rephrasing of content) before returning.
+_SCRIPT_RANGES: dict[str, tuple[int, int]] = {
+    "hi": (0x0900, 0x097F),  # Devanagari (Hindi)
+    "mr": (0x0900, 0x097F),  # Devanagari (Marathi)
+    "ta": (0x0B80, 0x0BFF),  # Tamil
+    "te": (0x0C00, 0x0C7F),  # Telugu
+    "kn": (0x0C80, 0x0CFF),  # Kannada
+    "ml": (0x0D00, 0x0D7F),  # Malayalam
+    "gu": (0x0A80, 0x0AFF),  # Gujarati
+    "pa": (0x0A00, 0x0A7F),  # Gurmukhi (Punjabi)
+    "bn": (0x0980, 0x09FF),  # Bengali
+    "ur": (0x0600, 0x06FF),  # Arabic script (Urdu)
+    "ar": (0x0600, 0x06FF),  # Arabic
+    "ja": (0x3040, 0x30FF),  # Hiragana/Katakana (kanji overlaps CJK, this is enough of a signal)
+    "ko": (0xAC00, 0xD7A3),  # Hangul
+    "zh": (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+}
+
+
+def _script_conforms(text: str, language: str) -> bool:
+    """True if *text* contains at least one character in *language*'s script, or if
+    *language* has no script mapping here (e.g. "en", or a Latin-script language not
+    listed -- nothing to check, assume compliant)."""
+    rng = _SCRIPT_RANGES.get(language)
+    if not rng or not text:
+        return True
+    lo, hi = rng
+    return any(lo <= ord(ch) <= hi for ch in text)
+
+
+def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = False) -> str:
+    """If *reply* doesn't conform to *language*'s script, force a translation-only retry."""
+    if not reply or language == "en" or _script_conforms(reply, language):
+        return reply
+    print(f"  [LanguageGuard] reply not in expected script for '{language}' -- forcing translation")
+    try:
+        translated = llm.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        f"Translate the following customer-support reply into {language}. "
+                        "Keep telecom terms in English as customers naturally hear them "
+                        "(data, plan, validity, recharge, balance, calls, SMS, OTP, SIM, "
+                        "eSIM, VoLTE, 4G, 5G, brand/plan names). Output ONLY the translated "
+                        "reply, nothing else -- no preamble, no quotes."
+                    )
+                ),
+                HumanMessage(content=reply),
+            ]
+        ).content.strip()
+    except Exception as e:
+        print(f"  [LanguageGuard] translation retry failed: {e}")
+        return reply
+    if show_debug:
+        print(f"  [LanguageGuard] translated -> {translated[:200]}")
+    return _detoxify_repetition(translated) or reply
+
+
+# ---------------------------------------------------------------------------
+# Near-duplicate query guard
+# ---------------------------------------------------------------------------
+#
+# The exact-signature dedup below only catches byte-identical repeats. In
+# practice, a small model more often retries a FAILED RAG search with a
+# barely-reworded query instead of a materially different one -- e.g.
+# 'travel plan recharge requirement postpaid' -> '...postpaid travel add-on'
+# -> 'Travel Pack recharge requirement' -- three near-identical searches, none
+# scoring well, that each cost a full LLM+tool round-trip (Groq latency +
+# growing context) without ever finding a better answer. This guard catches
+# that pattern via token-overlap similarity on any free-text "query" argument,
+# scoped per tool name, so the model gets nudged to diversify or wrap up
+# instead of burning the rest of MAX_TOOL_ITERATIONS on rewordings.
+_QUERY_WORD_RE = re.compile(r"[\w']+")
+
+
+def _query_tokens(text: str) -> set[str]:
+    return set(_QUERY_WORD_RE.findall(text.lower()))
+
+
+def _is_near_duplicate_query(a: str, b: str, threshold: float = 0.5) -> bool:
+    """True if two free-text queries are close reworks of each other (Jaccard
+    token overlap), even when not byte-identical."""
+    tokens_a, tokens_b = _query_tokens(a), _query_tokens(b)
+    if not tokens_a or not tokens_b:
+        return False
+    overlap = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+    return overlap >= threshold
+
+
 def run_tool_agent(
     llm: Any,
 
@@ -218,6 +318,9 @@ def run_tool_agent(
     # repeat is answered locally without a further tool invocation or LLM round-trip,
     # and nudges the model to try something different or wrap up instead of looping.
     seen_calls: dict[str, int] = {}
+    # Tool name -> list of raw "query" strings already tried this turn, for the
+    # near-duplicate guard below (separate from the exact-signature dedup above).
+    seen_queries: dict[str, list[str]] = {}
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
@@ -233,6 +336,7 @@ def run_tool_agent(
         if not getattr(ai_msg, "tool_calls", None):
             reply = (ai_msg.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
             reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            reply = _enforce_language(reply, language, llm, show_debug)
             print(f"  [SubAgent] Final reply (len={len(reply)}): {reply[:200]}")
             return reply
 
@@ -246,16 +350,32 @@ def run_tool_agent(
             # comparePlans(plan_ids=[...]) -- don't crash the signature computation.
             signature = call["name"] + "|" + json.dumps(call["args"], sort_keys=True, default=str)
             seen_calls[signature] = seen_calls.get(signature, 0) + 1
+            is_exact_repeat = seen_calls[signature] > 1
 
-            if seen_calls[signature] > 1:
+            # Near-duplicate check: only meaningful the first time this exact
+            # signature is seen (an exact repeat is already caught above), and
+            # only for calls carrying a free-text "query" argument (the RAG
+            # search tools).
+            is_near_repeat = False
+            query_text = call["args"].get("query") if isinstance(call["args"], dict) else None
+            if not is_exact_repeat and isinstance(query_text, str) and query_text.strip():
+                prior_queries = seen_queries.setdefault(call["name"], [])
+                is_near_repeat = any(
+                    _is_near_duplicate_query(query_text, prior) for prior in prior_queries
+                )
+                prior_queries.append(query_text)
+
+            if is_exact_repeat or is_near_repeat:
                 result = (
-                    "You already called this exact tool with these exact arguments and got "
-                    "a result -- calling it again will return the same thing. Either use a "
-                    "meaningfully different query/argument, or stop searching and answer with "
-                    "what you already have (say plainly if the exact answer wasn't found)."
+                    "You already searched for this or something very similar and got a "
+                    "result -- calling it again with slightly different wording will return "
+                    "the same thing. Either use a meaningfully different query/argument, or "
+                    "stop searching and answer with what you already have (say plainly if the "
+                    "exact answer wasn't found)."
                 )
                 if show_debug:
-                    print(f"  [tool call SKIPPED (duplicate #{seen_calls[signature]})] {call['name']}({call['args']})")
+                    reason = "exact duplicate" if is_exact_repeat else "near-duplicate query"
+                    print(f"  [tool call SKIPPED ({reason})] {call['name']}({call['args']})")
             else:
                 tool_fn = tools_by_name.get(call["name"])
                 if tool_fn is None:
@@ -294,6 +414,7 @@ def run_tool_agent(
     final = llm.invoke(messages)
     reply = (final.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    reply = _enforce_language(reply, language, llm, show_debug)
     if show_debug:
         print(f"  [LLM wrap-up reply] {reply}")
     return reply

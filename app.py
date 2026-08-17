@@ -818,8 +818,14 @@ if not st.session_state.session_started:
                     elif len(phone_input) != 10:
                         st.error(f"❌ Phone number must be exactly 10 digits (current length: {len(phone_input)}).")
                     else:
-                        selected_code = country_code.split(" ")[0]
-                        st.session_state.phone_number = f"{selected_code} {phone_input}"
+                        # NOTE: intentionally store only the bare 10-digit number, not
+                        # "<country_code> <number>". SessionContext/GraphState carry this
+                        # straight through to customer_db lookups (WHERE phone_number=?),
+                        # which are keyed on the plain 10-digit string from db_seed_data.py --
+                        # a "+91 9876500002" value never matches any row, so every DB-backed
+                        # tool (createComplaint, getBalance, etc.) fails with "no account
+                        # found" even though the number is a real seeded customer.
+                        st.session_state.phone_number = phone_input
                         st.session_state.component_key += 1 # Force fresh component instance
                         st.session_state.session_started = True
                         st.success("✅ Session started successfully!")
@@ -1003,8 +1009,17 @@ else:
             if event_name == "AUDIO_ENDED":
                 if st.session_state.status == "speaking":
                     if st.session_state.get("pending_handoff"):
-                        st.session_state.status = "handoff"
+                        # Human agent connected -> break the chain: cut the call,
+                        # stop the pipeline, and return to the homepage (same
+                        # reset as pressing the Cancel/End Session button).
                         st.session_state.pending_handoff = False
+                        st.session_state.session_started = False
+                        st.session_state.phone_number = ""
+                        st.session_state.chat_history = []
+                        st.session_state.agent_history = []
+                        st.session_state.pop("agent_session", None)
+                        st.session_state.status = "idle"
+                        st.session_state.audio_to_play = None
                     else:
                         st.session_state.status = "listening"
                     st.session_state.component_key += 1
@@ -1038,6 +1053,9 @@ else:
                 st.session_state.session_started = False
                 st.session_state.phone_number = ""
                 st.session_state.chat_history = []
+                st.session_state.agent_history = []
+                st.session_state.pop("agent_session", None)
+                st.session_state.pending_handoff = False
                 st.session_state.status = "idle"
                 st.session_state.audio_to_play = None
                 st.session_state.component_key += 1

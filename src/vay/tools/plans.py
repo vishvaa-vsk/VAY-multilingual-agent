@@ -135,6 +135,13 @@ def build_plans_tools(session: SessionContext) -> list:
             "tool": "changePlan",
             "args": {"new_plan_id": new_plan_id},
             "summary": summary,
+            # Captured NOW, not at resolve-time: the consent script instructs the customer to
+            # reply with the literal English word "yes"/"no" (see CONSENT_TEMPLATES), so by the
+            # time confirm_pending_action() runs on the NEXT turn, session.language has already
+            # been overwritten with "en" (that single word's correctly-detected language) --
+            # which is NOT the language this whole call has actually been conducted in. Freezing
+            # the real conversational language here is what confirm_pending_action() replies in.
+            "language": session.language,
         }
         # STOP_AND_SAY: is a code-level sentinel -- run_tool_agent() in agent_graph.py
         # recognizes this prefix and returns the rest verbatim as the turn's final reply,

@@ -183,7 +183,11 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
     if not pending:
         return None
     session.pending_action = None  # consume it either way -- one confirmation attempt only
-    lang = session.language
+    # Use the language captured when the action was STAGED (see plans.changePlan), not
+    # session.language now -- this turn is just the bare word "yes"/"no", which the ASR/
+    # orchestrator correctly detects as English, and that must not be mistaken for the
+    # call's actual language.
+    lang = pending.get("language") or session.language
 
     if not customer_said_yes:
         return CONFIRM_DECLINED_TEMPLATES.get(lang, CONFIRM_DECLINED_TEMPLATES["en"])
