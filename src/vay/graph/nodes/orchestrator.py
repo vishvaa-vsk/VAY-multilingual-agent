@@ -178,17 +178,22 @@ def orchestrator_node(state: GraphState) -> GraphState:
 
     import time as _time
     _t_orch_start = _time.time()
+    llm_call_failed = False
     try:
         raw = llm.invoke(messages).content
     except Exception as e:
         print(f"  [Orchestrator LLM call failed: {e}]")
         raw = None
+        llm_call_failed = True
     _t_orch_end = _time.time()
     print(f"  [Orchestrator] LLM call took {_t_orch_end - _t_orch_start:.2f}s")
 
     parsed = extract_json(raw) if raw else None
     if parsed is None:
-        print("  [Orchestrator] WARNING: LLM returned unparseable JSON, defaulting to unclear")
+        if llm_call_failed:
+            print("  [Orchestrator] WARNING: LLM call failed outright (all providers exhausted?) -- defaulting to unclear")
+        else:
+            print("  [Orchestrator] WARNING: LLM returned unparseable JSON, defaulting to unclear")
         parsed = {
             "language": state["language"],
             "intent": "unclear",
@@ -282,8 +287,19 @@ def orchestrator_node(state: GraphState) -> GraphState:
         else:
             session.consecutive_unclear = 0
 
+    # LLM call failure vs. malformed output: `forced_by_pending_action` (yes/no confirmation on
+    # a staged plan-change/payment) never depended on this turn's LLM output in the first place
+    # -- session.pending_action already decided the route deterministically -- so a rate-limited
+    # LLM this turn shouldn't block that. Otherwise, an outright call failure (every failover
+    # candidate exhausted) means we genuinely have nothing to route on; escalate honestly instead
+    # of routing to clarify_node, which would tell the customer "I didn't catch that" -- false,
+    # since their speech was never the problem.
+    llm_unavailable = llm_call_failed and not forced_by_pending_action
+
     handoff_reason = ""
-    if sensitive:
+    if llm_unavailable:
+        handoff_reason = "LLM provider(s) unavailable this turn (rate-limited/exhausted) -- escalating instead of guessing."
+    elif sensitive:
         handoff_reason = "Sensitive intent detected (billing dispute, cancellation, fraud/security)."
     elif explicit_human_request:
         handoff_reason = "Customer explicitly asked for a human agent."
@@ -311,6 +327,7 @@ def orchestrator_node(state: GraphState) -> GraphState:
         "route": route,
         "unclear_escalate": unclear_escalate,
         "handoff_reason": handoff_reason,
+        "llm_unavailable": llm_unavailable,
         "call_end_requested": cut_call or bool(parsed.get("call_end_requested", False)),
         "language": detected_lang,
         # Aggressive tracking
