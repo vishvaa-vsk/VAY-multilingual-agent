@@ -1092,6 +1092,16 @@
       resizeCanvas();
       updateFrame();
 
+      function sendFrameHeight() {
+        try {
+          window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:setFrameHeight",
+            height: window.innerHeight || document.body.scrollHeight || 600
+          }, "*");
+        } catch(e) {}
+      }
+
       // Handle Streamlit incoming parameters
       window.addEventListener("message", (event) => {
         if (event.data && event.data.type === "streamlit:render") {
@@ -1103,6 +1113,7 @@
           }
           updateKeywords();
           setupFullscreenPlacement();
+          sendFrameHeight();
         }
       });
 
@@ -1113,18 +1124,21 @@
           type: "streamlit:componentReady",
           apiVersion: 1
         }, "*");
+        sendFrameHeight();
       } catch (e) { }
 
       // Window resize
       window.addEventListener('resize', () => {
         resizeCanvas();
         setupFullscreenPlacement();
+        sendFrameHeight();
       });
       try {
         if (window.parent) {
           window.parent.addEventListener('resize', () => {
             resizeCanvas();
             setupFullscreenPlacement();
+            sendFrameHeight();
           });
         }
       } catch (e) { }

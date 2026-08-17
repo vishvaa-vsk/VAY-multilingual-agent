@@ -338,6 +338,16 @@ void main() {
     setupBackgroundPlacement();
 
     // Handle Streamlit incoming parameters
+    function sendFrameHeight() {
+      try {
+        window.parent.postMessage({
+          isStreamlitMessage: true,
+          type: "streamlit:setFrameHeight",
+          height: window.innerHeight || document.body.scrollHeight || 600
+        }, "*");
+      } catch(e) {}
+    }
+
     window.addEventListener("message", (event) => {
       if (event.data && event.data.type === "streamlit:render") {
         const args = event.data.args || {};
@@ -362,6 +372,7 @@ void main() {
         }
         setupBackgroundPlacement();
         resize();
+        sendFrameHeight();
       }
     });
 
@@ -372,12 +383,16 @@ void main() {
         type: "streamlit:componentReady",
         apiVersion: 1
       }, "*");
+      sendFrameHeight();
     } catch (e) {}
+
+    window.addEventListener('resize', sendFrameHeight);
 
     // Clean up on unload
     window.addEventListener('beforeunload', () => {
       cancelAnimationFrame(animateId);
       window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', sendFrameHeight);
       try {
         if (window.parent) {
           window.parent.removeEventListener('resize', resize);
