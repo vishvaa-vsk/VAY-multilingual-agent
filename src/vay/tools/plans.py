@@ -70,12 +70,13 @@ def build_plans_tools(session: SessionContext) -> list:
         if not rows:
             return "No plans found."
         
-        # If the LLM pulled a large list, explicitly instruct it NOT to read the whole thing
+        # If the LLM pulled a large list, explicitly instruct it NOT to read the whole thing.
+        # Kept short -- this note is repeated back into context on every remaining tool-loop
+        # iteration this turn, so its size is paid for multiple times, not once.
         if len(rows) > 3:
             return (
-                f"[SYSTEM INSTRUCTION: Here are {len(rows)} plans. DO NOT read this entire list out loud to the customer. "
-                "Pick exactly 2 or 3 of the most relevant plans from this list, present them briefly, "
-                "and ask the customer which one they are interested in.]\n\n"
+                f"[Note: {len(rows)} plans below. Pick 2-3 most relevant, present briefly, "
+                "ask which one the customer wants.]\n\n"
             ) + plan_list
             
         return plan_list

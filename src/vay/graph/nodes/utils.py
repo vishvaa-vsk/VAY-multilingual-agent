@@ -36,7 +36,6 @@ from vay.graph.utils import (
     HANDOFF_MESSAGE_TEMPLATES,
     HUMAN_REQUEST_PATTERNS,
     PII_LEAK_PATTERNS,
-    SUBAGENT_SYSTEM_PROMPT_TEMPLATE,
     UNCERTAINTY_PATTERNS,
     _llm,
     localized,
@@ -220,24 +219,24 @@ def closing_node(state: GraphState) -> GraphState:
         return {"final_reply": state["warning_reply"]}
 
     llm = _llm()
+    # TOKEN EFFICIENCY: this used to send the FULL SUBAGENT_SYSTEM_PROMPT_TEMPLATE (~2000+
+    # tokens of tool-use rules, grounding/escalation guardrails, anti-repetition rules, etc.)
+    # plus the entire trimmed conversation history just to generate a single generic "thanks
+    # for calling" line -- closing_node calls no tools and touches no account data, so none of
+    # that applies. That token cost was being paid on every call-ending turn and contributing to
+    # hitting Groq's per-minute token cap (see run.log 429s). A minimal, closing-specific prompt
+    # with just the last transcript line covers this task just as well for a fraction of the cost.
     messages = [
         SystemMessage(
-            content=SUBAGENT_SYSTEM_PROMPT_TEMPLATE.format(
-                agent_name="call-closing assistant",
-                phone_number=state["phone_number"],
-                language=state["language"],
-                account_context="",  # no account context needed for closing
+            content=(
+                f'You are a warm Nexatel Communications voice-support agent ending a call in '
+                f'language "{state["language"]}". Reply with ONE brief, natural closing line '
+                f'thanking the customer for calling Nexatel -- no new information, no questions, '
+                f'no markdown. Write entirely in "{state["language"]}".'
             )
-        )
+        ),
+        HumanMessage(content=f"Customer's last message: {state['transcript']}"),
     ]
-    messages.extend(state.get("conversation_history", []))
-    messages.append(
-        HumanMessage(
-            content=f"Customer's latest message: {state['transcript']}\n\n"
-            "The customer is ending the call. Reply with ONE brief, warm closing line "
-            "thanking them for calling Nexatel -- no new information, no questions back."
-        )
-    )
     fallback = localized(CLOSING_FALLBACK_TEMPLATES, state["language"])
     try:
         reply = llm.invoke(messages).content.strip()

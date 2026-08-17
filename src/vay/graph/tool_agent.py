@@ -37,7 +37,9 @@ USAGE
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -45,6 +47,48 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from vay.graph.utils import localized
 
 MAX_TOOL_ITERATIONS = 6
+
+# ---------------------------------------------------------------------------
+# Groq HTTP/retry visibility
+# ---------------------------------------------------------------------------
+# ChatGroq is configured with max_retries=3 (core_utils._llm). That retry logic
+# lives INSIDE the groq SDK's HTTP client and is otherwise completely silent --
+# a 429 (rate limit) or 5xx there just makes the surrounding llm.invoke() call
+# take longer with exponential backoff, and nothing in our own logs explains
+# why (e.g. "[SubAgent] Took 31.54s" with nothing printed in between). Turn on
+# the SDK's own request/retry logging so a slow call shows its actual cause
+# (HTTP status code + "Retrying request in N seconds") instead of looking like
+# an unexplained stall.
+_groq_http_logger = logging.getLogger("httpx")
+_groq_sdk_logger = logging.getLogger("groq")
+if not _groq_http_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("  [Groq HTTP] %(message)s"))
+    _groq_http_logger.addHandler(_handler)
+    _groq_http_logger.setLevel(logging.INFO)
+    _groq_http_logger.propagate = False
+    _groq_sdk_logger.addHandler(_handler)
+    # INFO, not DEBUG: DEBUG on the groq SDK logger dumps the full raw request
+    # body -- including the raw audio bytes on STT calls -- which floods the
+    # console with megabytes of binary per request. INFO still surfaces
+    # "Retrying request ... in N seconds" backoff lines, which is all we need.
+    _groq_sdk_logger.setLevel(logging.INFO)
+    _groq_sdk_logger.propagate = False
+
+
+def _timed_invoke(llm: Any, messages: list, label: str) -> Any:
+    """llm.invoke(messages) with an elapsed-time print, so a slow sub-agent
+    turn can be pinned on a specific LLM round-trip (and, via the httpx/groq
+    logging above, on a specific 429/backoff) instead of only showing up as
+    one big unexplained total at the end."""
+    start = time.monotonic()
+    try:
+        result = llm.invoke(messages)
+        print(f"  [SubAgent LLM call: {label}] took {time.monotonic() - start:.2f}s")
+        return result
+    except Exception:
+        print(f"  [SubAgent LLM call: {label}] FAILED after {time.monotonic() - start:.2f}s")
+        raise
 
 # Repetition-loop guard on the SUB-AGENT's generated reply.
 #
@@ -238,7 +282,8 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
         return reply
     print(f"  [LanguageGuard] reply not in expected script for '{language}' -- forcing translation")
     try:
-        translated = llm.invoke(
+        translated = _timed_invoke(
+            llm,
             [
                 SystemMessage(
                     content=(
@@ -250,7 +295,8 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
                     )
                 ),
                 HumanMessage(content=reply),
-            ]
+            ],
+            "language-guard translation retry",
         ).content.strip()
     except Exception as e:
         print(f"  [LanguageGuard] translation retry failed: {e}")
@@ -322,9 +368,11 @@ def run_tool_agent(
     # near-duplicate guard below (separate from the exact-signature dedup above).
     seen_queries: dict[str, list[str]] = {}
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for iteration in range(MAX_TOOL_ITERATIONS):
         try:
-            ai_msg: AIMessage = bound_llm.invoke(messages)
+            ai_msg: AIMessage = _timed_invoke(
+                bound_llm, messages, f"tool-loop iter {iteration + 1}/{MAX_TOOL_ITERATIONS}"
+            )
         except Exception as e:
             # The model hallucinated something the Groq API rejected outright before we
             # ever got a normal response back (e.g. calling an unregistered tool name) --
@@ -411,7 +459,7 @@ def run_tool_agent(
             "unrelated remarks, and do not claim to have done something no tool actually did."
         )
     )
-    final = llm.invoke(messages)
+    final = _timed_invoke(llm, messages, "forced wrap-up")
     reply = (final.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     reply = _enforce_language(reply, language, llm, show_debug)
