@@ -99,7 +99,74 @@ tests/test_tts_chunking.py  NEW — unit tests for the chunker
 No changes to `pyproject.toml` / `uv.lock` (no new dependencies — reuses
 `edge-tts` and `playsound3`, both already present).
 
-## 6. Possible follow-ups (not done here, flagged for the team)
+## 6. Addendum (same day) — language coverage + prompt alignment
+
+Follow-up questions after the initial fix: does the chunker work for *all* 18
+TTS languages, and does the LLM's `final_reply` text actually produce output
+the chunker (and TTS in general) handles well?
+
+**Chunker coverage gap found and fixed** (`src/vay/tts/engine.py`):
+`_SENTENCE_SPLIT_RE` only recognized Latin `.!?`, Devanagari danda `। ॥`, and
+CJK fullwidth punctuation — missing Arabic's `؟` (question mark) and Urdu's
+own full stop `۔` (distinct from the Arabic one), both used by the `ar`/`ur`
+voices. Added both. New tests: `test_arabic_question_mark_boundary_is_split`,
+`test_urdu_full_stop_boundary_is_split`. Every one of the 18 `VOICES`
+languages now has its natural sentence-ending punctuation recognized. (When a
+reply genuinely has no recognizable boundary, the whole text is still spoken
+correctly as one chunk — just without the pipelining benefit, never a
+failure.)
+
+**LLM output alignment fixed** (`src/vay/graph/core_utils.py`,
+`SUBAGENT_SYSTEM_PROMPT_TEMPLATE` — the single prompt every spoken reply is
+generated from, including `closing_node`'s goodbye line, which reuses the
+same template): the LLM's replies weren't guaranteed to produce text that's
+good to *speak*, in three concrete ways a caller would actually notice:
+
+1. **Raw table pipes could leak into speech.** The KB documents
+   (`data/kb/*.md`) are markdown tables; a sub-agent could echo a `|`-
+   delimited row instead of summarizing it. Rule 11 now explicitly forbids
+   the `|` character and raw tables/bullets, with a worked example showing
+   the required rephrasing.
+2. **Rates were written with a slash** (e.g. "2GB/day" — the plan-listing
+   instruction's own worked example did this). Rule 11 now requires "2 GB
+   per day" / "per month" / "per line" instead, and the `/` character is
+   banned from the spoken reply outright. Fixed both the new rule and the
+   pre-existing example text at the plan-listing instruction.
+3. **Dates could come out in raw ISO/tool format** (e.g. `2025-08-15` from a
+   DB column) instead of a natural spoken date. New Rule 12 requires
+   converting any numeric/ISO date to a natural spoken form per language —
+   "15th August 2025" in English, and the equivalent non-ordinal form in
+   other languages (e.g. Hindi "15 अगस्त 2025", Tamil "15 ஆகஸ்ட் 2025").
+4. **Tone strengthened + terminal-punctuation requirement added.** Rule 11
+   now also requires every sentence to end with proper terminal punctuation
+   for the reply's language — this isn't just cosmetic, it's what the
+   sentence-chunker above actually keys off of, so a reply that respects
+   this rule gets the full pipelining benefit; one that doesn't still plays
+   correctly, just as a single unsplit chunk.
+
+Renumbered the old "12. ANTI-REPETITION" rule to 13 to make room; its content
+is unchanged.
+
+**Not touched:** `ORCHESTRATOR_SYSTEM_PROMPT` (JSON-only, never spoken), and
+every fixed/deterministic template (`HANDOFF_MESSAGE_TEMPLATES`,
+`CLARIFY_TEMPLATES`, `CHITCHAT_TEMPLATES`, `AGGRESSIVE_WARNING_TEMPLATES`,
+`CALL_CUT_TEMPLATES`, consent scripts) — these are hand-written per-language
+strings by design, not LLM output, so there's nothing for a prompt rule to
+fix there.
+
+**Verification:** `uv run pytest tests/ -v` → **18/18 passed** (16 baseline
++ 2 new punctuation-coverage tests). `ruff check` on the touched files shows
+only pre-existing long-line (E501) warnings already present in
+`core_utils.py` before this change (the file's system-prompt strings were
+already over the 100-char line limit throughout) — no new lint issues
+introduced. The prompt-wording changes themselves need a live
+`GROQ_API_KEY`-backed run to confirm the model actually complies (prompt
+instructions are a strong nudge, not a hard guarantee) — recommend spot-
+checking a plan-listing question (`/day` phrasing) and a date-bearing
+question (ticket/due-date lookup) in a couple of languages via
+`uv run python scripts/run_assistant.py --show_debug`.
+
+## 7. Possible follow-ups (not done here, flagged for the team)
 
 - If further latency reduction is needed beyond this, the next real lever is
   raw-PCM streaming playback (see §3) — bigger change, bigger win.

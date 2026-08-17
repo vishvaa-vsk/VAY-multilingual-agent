@@ -66,10 +66,14 @@ def _clean_text_for_speech(text: str) -> str:
     return cleaned.strip()
 
 
-# Sentence-ending punctuation across every language this TTS engine supports:
-# Latin '.', '!', '?'; Devanagari danda '।' / double danda '॥' (Hindi, Marathi);
-# fullwidth CJK punctuation used by the zh/ja/ko voices.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥。！？])\s+")
+# Sentence-ending punctuation across every language this TTS engine supports (VOICES dict:
+# ta, hi, en, fr, de, es, ja, ko, zh, it, ru, ar, te, kn, ml, mr, gu, ur):
+#   .!?      Latin -- en, fr, de, es, it, ru, and how ta/te/kn/ml/gu are written in practice
+#   । ॥      Devanagari danda / double danda -- hi, mr
+#   。！？   fullwidth CJK punctuation -- zh, ja, ko
+#   ؟        Arabic question mark -- ar, ur
+#   ۔        Urdu full stop (distinct from the Arabic one) -- ur
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥。！？؟۔])\s+")
 
 # Chunking only pays off once there's more than one sentence to pipeline —
 # below this length, splitting just adds an extra edge-tts connection for

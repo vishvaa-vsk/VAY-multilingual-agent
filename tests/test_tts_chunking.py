@@ -37,6 +37,26 @@ def test_hindi_danda_boundary_is_split() -> None:
     assert len(chunks) == 3
 
 
+def test_arabic_question_mark_boundary_is_split() -> None:
+    text = (
+        "هل تريد معرفة رصيدك الحالي؟ "
+        "خطتك الحالية تكلف مائتين وتسعة وتسعين روبية شهريا. "
+        "هي صالحة لمدة ثمانية وعشرين يوما من تاريخ التفعيل."
+    )
+    chunks = _split_into_speech_chunks(text)
+    assert len(chunks) == 3
+
+
+def test_urdu_full_stop_boundary_is_split() -> None:
+    text = (
+        "آپ کا موجودہ پلان دو سو ننانوے روپے ماہانہ کا ہے۔ "
+        "اس میں روزانہ دو جی بی ڈیٹا اور غیر محدود کالز شامل ہیں۔ "
+        "یہ پلان ایکٹیویشن کی تاریخ سے اٹھائیس دنوں کے لیے درست ہے۔"
+    )
+    chunks = _split_into_speech_chunks(text)
+    assert len(chunks) == 3
+
+
 def test_no_empty_chunks_produced() -> None:
     text = (
         "This is sentence one. "
