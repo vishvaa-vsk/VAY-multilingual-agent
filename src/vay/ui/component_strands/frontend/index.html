@@ -763,7 +763,8 @@
       dispersion: 1.0,
       glassSize: 1.0,
       status: 'idle',
-      audio_data: null
+      audio_data: null,
+      more_chunks_pending: false
     };
 
     // State Variables for visualizer reactivity
@@ -1185,21 +1186,30 @@
       activeAudioSource = audio;
 
       audio.onended = () => {
-        if (myvad && isRecording) {
-            // Auto-resume listening for continuous conversation
-            config.status = 'listening';
-            updateUIState('listening');
-            
-            try {
-              analyserNode.disconnect();
-              if (ttsSourceNode) { ttsSourceNode.disconnect(); ttsSourceNode = null; }
-              if (micSourceNode) { micSourceNode.connect(analyserNode); }
-            } catch (e) {}
+        // A chunked TTS reply plays as a sequence of clips, each ending its
+        // own <audio> element in turn. If more chunks are still queued
+        // server-side, this is NOT the end of the reply -- stay visually
+        // "speaking" and don't touch the mic yet; just tell Streamlit this
+        // clip finished so it can hand over the next one. Switching to
+        // "listening"/resuming the mic here would flicker the UI back and
+        // forth between chunks and briefly open the mic mid-reply.
+        if (!config.more_chunks_pending) {
+          if (myvad && isRecording) {
+              // Auto-resume listening for continuous conversation
+              config.status = 'listening';
+              updateUIState('listening');
 
-            myvad.start();
-        } else {
-            config.status = 'idle';
-            updateUIState('idle');
+              try {
+                analyserNode.disconnect();
+                if (ttsSourceNode) { ttsSourceNode.disconnect(); ttsSourceNode = null; }
+                if (micSourceNode) { micSourceNode.connect(analyserNode); }
+              } catch (e) {}
+
+              myvad.start();
+          } else {
+              config.status = 'idle';
+              updateUIState('idle');
+          }
         }
         sendMessageToStreamlit({ event: "audio_finished" });
       };
@@ -1224,8 +1234,10 @@
         }
       }).catch(err => {
         console.error("Audio playback error:", err);
-        config.status = 'idle';
-        updateUIState('idle');
+        if (!config.more_chunks_pending) {
+          config.status = 'idle';
+          updateUIState('idle');
+        }
         sendMessageToStreamlit({ event: "audio_finished" });
       });
     }
