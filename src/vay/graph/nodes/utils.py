@@ -39,7 +39,6 @@ from vay.graph.utils import (
     UNCERTAINTY_PATTERNS,
     _llm,
     _redact_entities,
-    _redact_pii,
     localized,
     log_handoff,
 )
@@ -142,12 +141,24 @@ def human_handoff_node(state: GraphState) -> GraphState:
     """Log the handoff context and return the localized handoff message."""
     reason = state.get("handoff_reason", "unspecified")
     transcript = state["transcript"]
+    normalized_query = state.get("normalized_query")
     # A PII-disclosure handoff (see orchestrator_node's guardrail) exists specifically to keep
     # an Aadhaar/card/bank-account number out of downstream systems -- writing the RAW
-    # transcript to handoff_log.jsonl right after would defeat that. Matched on the exact
-    # "PII disclosure:" prefix orchestrator_node sets for this case.
+    # transcript/normalized_query to handoff_log.jsonl right after would defeat that. Matched
+    # on the exact "PII disclosure:" prefix orchestrator_node sets for this case.
+    #
+    # This blanks BOTH fields entirely rather than regex-masking digit runs in them
+    # (_redact_pii still exists for that, but is not enough on its own here): a customer can
+    # read a card number out as spoken number-words ("two four three five...", or the same in
+    # any other language/script) with no literal digit character anywhere in the transcript,
+    # and the orchestrator NLU still faithfully turns that into a plain-digit
+    # normalized_query ("... card details: 2435729289793") -- _redact_pii's digit-run regex
+    # cannot catch either form. Once this branch fires we already know the turn discloses
+    # exactly the number we're obligated not to store, so there's nothing safe left to keep
+    # from either field.
     if reason.startswith("PII disclosure:"):
-        transcript = _redact_pii(transcript)
+        transcript = "[REDACTED - PII disclosure]"
+        normalized_query = "[REDACTED - PII disclosure]"
     # entities is redacted unconditionally (not gated on `reason`) -- a card/account number
     # can end up in state["entities"] via the orchestrator NLU's structured extraction even
     # when the handoff was triggered by something unrelated (a tool-loop failure, a rate
@@ -161,7 +172,7 @@ def human_handoff_node(state: GraphState) -> GraphState:
             "transcript": transcript,
             "intent": state.get("intent"),
             "entities": _redact_entities(state.get("entities")),
-            "normalized_query": state.get("normalized_query"),
+            "normalized_query": normalized_query,
             "route": state.get("route"),
             "reason": reason,
             "draft_reply_at_handoff": state.get("draft_reply"),
