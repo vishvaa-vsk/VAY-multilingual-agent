@@ -66,10 +66,108 @@ def _clean_text_for_speech(text: str) -> str:
     return cleaned.strip()
 
 
+# Sentence-ending punctuation across every language this TTS engine supports (VOICES dict:
+# ta, hi, en, fr, de, es, ja, ko, zh, it, ru, ar, te, kn, ml, mr, gu, ur):
+#   .!?      Latin -- en, fr, de, es, it, ru, and how ta/te/kn/ml/gu are written in practice
+#   । ॥      Devanagari danda / double danda -- hi, mr
+#   。！？   fullwidth CJK punctuation -- zh, ja, ko
+#   ؟        Arabic question mark -- ar, ur
+#   ۔        Urdu full stop (distinct from the Arabic one) -- ur
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥。！？؟۔])\s+")
+
+# Chunking only pays off once there's more than one sentence to pipeline —
+# below this length, splitting just adds an extra edge-tts connection for
+# no latency benefit.
+_MIN_CHARS_FOR_CHUNKING = 120
+
+
+def _split_into_speech_chunks(text: str) -> list[str]:
+    """Split *text* into sentence-level chunks for pipelined synthesis.
+
+    Returns a single-item list (the whole text) when the text is short or
+    has no detectable sentence boundaries — chunking a one-liner only adds
+    network overhead with no latency win.
+    """
+    if len(text) < _MIN_CHARS_FOR_CHUNKING:
+        return [text]
+
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
+    if len(parts) <= 1:
+        return [text]
+    return parts
+
+
 async def _generate_speech(text: str, voice: str, output_path: str) -> None:
     """Async helper: synthesize text with edge-tts and save to output_path."""
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
+
+
+async def _synthesize_chunk(text: str, voice: str) -> str:
+    """Synthesize one chunk to a fresh temp mp3 file, return its path."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(tmp_fd)
+    await _generate_speech(text, voice, tmp_path)
+    return tmp_path
+
+
+def _play_file(path: str) -> None:
+    """Blocking playback of a single audio file. Logs and swallows errors."""
+    try:
+        from playsound3 import playsound  # type: ignore[import]
+        playsound(path)
+    except Exception as e:
+        print(f"  [TTS playback error (continuing without audio): {e}]")
+    finally:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _run_async(coro) -> None:
+    """Run *coro* to completion, handling the case where we're already
+    inside a running event loop (e.g. Gradio / Streamlit / Jupyter) by
+    falling back to a dedicated thread. Errors are logged, not raised.
+    """
+    try:
+        asyncio.run(coro)
+    except RuntimeError:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            try:
+                future.result(timeout=60)
+            except Exception as e:
+                print(f"  [TTS error (thread): {e}]")
+    except Exception as e:
+        print(f"  [TTS error: {e}]")
+
+
+async def _speak_pipelined(chunks: list[str], voice: str) -> None:
+    """Synthesize and play *chunks* in order, overlapping synthesis of the
+    next chunk with playback of the current one.
+
+    Time-to-first-audio is bounded by the synthesis time of chunk 0 only —
+    every subsequent chunk is already being synthesized in the background
+    while the previous one plays, instead of the whole reply having to
+    finish synthesizing before any audio starts.
+    """
+    loop = asyncio.get_running_loop()
+
+    next_chunk_task = asyncio.ensure_future(_synthesize_chunk(chunks[0], voice))
+    for i in range(len(chunks)):
+        current_path = await next_chunk_task
+
+        # Kick off synthesis of the following chunk (if any) before we start
+        # blocking on playback of the current one, so it runs concurrently.
+        if i + 1 < len(chunks):
+            next_chunk_task = asyncio.ensure_future(
+                _synthesize_chunk(chunks[i + 1], voice)
+            )
+
+        await loop.run_in_executor(None, _play_file, current_path)
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +207,17 @@ def speak(
     # Script-aware safeguard: If the LLM returned Tamil/Hindi/Indic Unicode text,
     # ensure we pick the correct native neural voice rather than an English voice
     # which would otherwise pronounce the Unicode characters as numbers/gibberish.
+    #
+    # The Devanagari check below excludes U+0964/U+0965 (danda / double danda,
+    # "\u0964"/"\u0965") on purpose: those punctuation marks live in the Devanagari
+    # Unicode block but are reused as the sentence-ending mark by several
+    # *other* Indic scripts too (Bengali, Gujarati, Odia, ...). Matching on
+    # them alone previously misfired "hi" for any non-Hindi Indic sentence
+    # that happened to end with one, even with zero actual Devanagari letters
+    # present.
     if re.search(r"[\u0b80-\u0bff]", text):
         effective_lang = "ta"
-    elif re.search(r"[\u0900-\u097f]", text):
+    elif re.search(r"[\u0900-\u0963\u0966-\u097f]", text):
         effective_lang = "hi"
     elif re.search(r"[\u0c00-\u0c7f]", text):
         effective_lang = "te"
@@ -129,14 +235,25 @@ def speak(
     voice = VOICES.get(effective_lang, FALLBACK_VOICE)
     speech_text = _clean_text_for_speech(text)
 
-    # Use a temp file when no explicit path is given
+    # --- Pipelined path: synthesize-and-play-immediately, no caller-supplied
+    # output_path to preserve. This is the hot path used by tts_node on every
+    # turn. Sentence chunks are synthesized and played in an overlapping
+    # pipeline so playback of chunk 1 starts as soon as it's ready instead of
+    # waiting for the whole reply to finish synthesizing first.
+    if play and output_path is None:
+        chunks = _split_into_speech_chunks(speech_text)
+        _run_async(_speak_pipelined(chunks, voice))
+        return ""
+
+    # --- Single-file path: explicit output_path given, and/or play=False
+    # (e.g. TTSEngine.synthesize(), tests, or any caller that wants one
+    # complete file on disk). Behavior unchanged from before.
     using_temp = output_path is None
     if using_temp:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
         os.close(tmp_fd)
         output_path = tmp_path
 
-    # --- Synthesis ---
     try:
         asyncio.run(_generate_speech(speech_text, voice, output_path))
     except RuntimeError:

@@ -37,7 +37,9 @@ USAGE
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -45,6 +47,48 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from vay.graph.utils import localized
 
 MAX_TOOL_ITERATIONS = 6
+
+# ---------------------------------------------------------------------------
+# Groq HTTP/retry visibility
+# ---------------------------------------------------------------------------
+# ChatGroq is configured with max_retries=3 (core_utils._llm). That retry logic
+# lives INSIDE the groq SDK's HTTP client and is otherwise completely silent --
+# a 429 (rate limit) or 5xx there just makes the surrounding llm.invoke() call
+# take longer with exponential backoff, and nothing in our own logs explains
+# why (e.g. "[SubAgent] Took 31.54s" with nothing printed in between). Turn on
+# the SDK's own request/retry logging so a slow call shows its actual cause
+# (HTTP status code + "Retrying request in N seconds") instead of looking like
+# an unexplained stall.
+_groq_http_logger = logging.getLogger("httpx")
+_groq_sdk_logger = logging.getLogger("groq")
+if not _groq_http_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("  [Groq HTTP] %(message)s"))
+    _groq_http_logger.addHandler(_handler)
+    _groq_http_logger.setLevel(logging.INFO)
+    _groq_http_logger.propagate = False
+    _groq_sdk_logger.addHandler(_handler)
+    # INFO, not DEBUG: DEBUG on the groq SDK logger dumps the full raw request
+    # body -- including the raw audio bytes on STT calls -- which floods the
+    # console with megabytes of binary per request. INFO still surfaces
+    # "Retrying request ... in N seconds" backoff lines, which is all we need.
+    _groq_sdk_logger.setLevel(logging.INFO)
+    _groq_sdk_logger.propagate = False
+
+
+def _timed_invoke(llm: Any, messages: list, label: str) -> Any:
+    """llm.invoke(messages) with an elapsed-time print, so a slow sub-agent
+    turn can be pinned on a specific LLM round-trip (and, via the httpx/groq
+    logging above, on a specific 429/backoff) instead of only showing up as
+    one big unexplained total at the end."""
+    start = time.monotonic()
+    try:
+        result = llm.invoke(messages)
+        print(f"  [SubAgent LLM call: {label}] took {time.monotonic() - start:.2f}s")
+        return result
+    except Exception:
+        print(f"  [SubAgent LLM call: {label}] FAILED after {time.monotonic() - start:.2f}s")
+        raise
 
 # Repetition-loop guard on the SUB-AGENT's generated reply.
 #
@@ -221,6 +265,29 @@ _SCRIPT_RANGES: dict[str, tuple[int, int]] = {
 }
 
 
+
+# Human-readable names for the translation-retry prompt. A bare ISO code
+# ("ta") leaves room for a small model to guess the wrong language --
+# spelling it out removes the ambiguity that let a Tamil ("ta") session
+# come back translated into Bengali in practice.
+_LANGUAGE_NAMES: dict[str, str] = {
+    "hi": "Hindi",
+    "mr": "Marathi",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "gu": "Gujarati",
+    "pa": "Punjabi (Gurmukhi script)",
+    "bn": "Bengali",
+    "ur": "Urdu",
+    "ar": "Arabic",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese (Simplified)",
+}
+
+
 def _script_conforms(text: str, language: str) -> bool:
     """True if *text* contains at least one character in *language*'s script, or if
     *language* has no script mapping here (e.g. "en", or a Latin-script language not
@@ -237,27 +304,43 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
     if not reply or language == "en" or _script_conforms(reply, language):
         return reply
     print(f"  [LanguageGuard] reply not in expected script for '{language}' -- forcing translation")
+    language_name = _LANGUAGE_NAMES.get(language, language)
     try:
-        translated = llm.invoke(
+        translated = _timed_invoke(
+            llm,
             [
                 SystemMessage(
                     content=(
-                        f"Translate the following customer-support reply into {language}. "
-                        "Keep telecom terms in English as customers naturally hear them "
-                        "(data, plan, validity, recharge, balance, calls, SMS, OTP, SIM, "
-                        "eSIM, VoLTE, 4G, 5G, brand/plan names). Output ONLY the translated "
-                        "reply, nothing else -- no preamble, no quotes."
+                        f"Translate the following customer-support reply into {language_name} "
+                        f"(ISO code: {language}). Keep telecom terms in English as customers "
+                        "naturally hear them (data, plan, validity, recharge, balance, calls, "
+                        "SMS, OTP, SIM, eSIM, VoLTE, 4G, 5G, brand/plan names). Output ONLY the "
+                        "translated reply, nothing else -- no preamble, no quotes."
                     )
                 ),
                 HumanMessage(content=reply),
-            ]
+            ],
+            "language-guard translation retry",
         ).content.strip()
     except Exception as e:
         print(f"  [LanguageGuard] translation retry failed: {e}")
         return reply
     if show_debug:
         print(f"  [LanguageGuard] translated -> {translated[:200]}")
-    return _detoxify_repetition(translated) or reply
+
+    result = _detoxify_repetition(translated) or reply
+    # Backstop: the retry itself is just another LLM call and can miss too
+    # (e.g. translating "ta" -> Bengali instead of Tamil). Don't ship an
+    # unverified guess -- if it still isn't in the right script, keep the
+    # original (English) reply, which is at least a known, understandable
+    # state, rather than a silently wrong language going to TTS.
+    if not _script_conforms(result, language):
+        print(
+            f"  [LanguageGuard] translation retry still not in expected script for "
+            f"'{language}' -- keeping original reply"
+        )
+        return reply
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +383,18 @@ def run_tool_agent(
     history: list,
     language: str = "en",
     show_debug: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     """Minimal bounded tool-calling loop: LLM <-> tools until it stops calling
-    tools or MAX_TOOL_ITERATIONS is hit."""
+    tools or MAX_TOOL_ITERATIONS is hit.
+
+    Returns (reply, degraded) -- `degraded` is True whenever `reply` is one of the
+    generic HANDOFF_MESSAGE_TEMPLATES/TOOL_LOOP_FAILURE_TEMPLATES fallbacks (LLM call
+    failed outright, or came back with nothing usable) rather than a real answer. The
+    fallback TEXT alone used to be the only signal of this -- callers had no reliable,
+    language-independent way to tell "sub-agent genuinely answered" from "sub-agent gave
+    up and is punting to a human", so graph state's `handoff` flag never got set for
+    this path and the front end never learned the call needs to hand off (see caller).
+    """
     bound_llm = llm.bind_tools(tools)
     tools_by_name = {t.name: t for t in tools}
 
@@ -322,23 +414,30 @@ def run_tool_agent(
     # near-duplicate guard below (separate from the exact-signature dedup above).
     seen_queries: dict[str, list[str]] = {}
 
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for iteration in range(MAX_TOOL_ITERATIONS):
         try:
-            ai_msg: AIMessage = bound_llm.invoke(messages)
+            ai_msg: AIMessage = _timed_invoke(
+                bound_llm, messages, f"tool-loop iter {iteration + 1}/{MAX_TOOL_ITERATIONS}"
+            )
         except Exception as e:
             # The model hallucinated something the Groq API rejected outright before we
             # ever got a normal response back (e.g. calling an unregistered tool name) --
             # degrade to a safe, guardrail-recognized reply instead of crashing the call.
             print(f"  [ERROR] tool-calling LLM call failed, degrading to handoff: {e}")
-            return localized(TOOL_LOOP_FAILURE_TEMPLATES, language)
+            return localized(TOOL_LOOP_FAILURE_TEMPLATES, language), True
         messages.append(ai_msg)
 
         if not getattr(ai_msg, "tool_calls", None):
-            reply = (ai_msg.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
-            reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            raw_content = (ai_msg.content or "").strip()
+            degraded = not raw_content
+            reply = raw_content or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+            detoxified = _detoxify_repetition(reply)
+            if not detoxified:
+                degraded = True
+            reply = detoxified or localized(HANDOFF_MESSAGE_TEMPLATES, language)
             reply = _enforce_language(reply, language, llm, show_debug)
             print(f"  [SubAgent] Final reply (len={len(reply)}): {reply[:200]}")
-            return reply
+            return reply, degraded
 
         if show_debug and (ai_msg.content or "").strip():
             # Some models emit reasoning/commentary text alongside tool_calls -- show it so a
@@ -393,7 +492,7 @@ def run_tool_agent(
             # testing showed a small model will happily claim "done" here if given the chance.
             result_str = str(result)
             if result_str.startswith("STOP_AND_SAY:"):
-                return result_str[len("STOP_AND_SAY:") :].strip()
+                return result_str[len("STOP_AND_SAY:") :].strip(), False
 
             messages.append(ToolMessage(content=result_str, tool_call_id=call["id"]))
 
@@ -411,13 +510,18 @@ def run_tool_agent(
             "unrelated remarks, and do not claim to have done something no tool actually did."
         )
     )
-    final = llm.invoke(messages)
-    reply = (final.content or "").strip() or localized(HANDOFF_MESSAGE_TEMPLATES, language)
-    reply = _detoxify_repetition(reply) or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    final = _timed_invoke(llm, messages, "forced wrap-up")
+    raw_content = (final.content or "").strip()
+    degraded = not raw_content
+    reply = raw_content or localized(HANDOFF_MESSAGE_TEMPLATES, language)
+    detoxified = _detoxify_repetition(reply)
+    if not detoxified:
+        degraded = True
+    reply = detoxified or localized(HANDOFF_MESSAGE_TEMPLATES, language)
     reply = _enforce_language(reply, language, llm, show_debug)
     if show_debug:
         print(f"  [LLM wrap-up reply] {reply}")
-    return reply
+    return reply, degraded
 
 
 # ---------------------------------------------------------------------------

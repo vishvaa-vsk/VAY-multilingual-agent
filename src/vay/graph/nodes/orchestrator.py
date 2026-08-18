@@ -178,17 +178,22 @@ def orchestrator_node(state: GraphState) -> GraphState:
 
     import time as _time
     _t_orch_start = _time.time()
+    llm_call_failed = False
     try:
         raw = llm.invoke(messages).content
     except Exception as e:
         print(f"  [Orchestrator LLM call failed: {e}]")
         raw = None
+        llm_call_failed = True
     _t_orch_end = _time.time()
     print(f"  [Orchestrator] LLM call took {_t_orch_end - _t_orch_start:.2f}s")
 
     parsed = extract_json(raw) if raw else None
     if parsed is None:
-        print("  [Orchestrator] WARNING: LLM returned unparseable JSON, defaulting to unclear")
+        if llm_call_failed:
+            print("  [Orchestrator] WARNING: LLM call failed outright (all providers exhausted?) -- defaulting to unclear")
+        else:
+            print("  [Orchestrator] WARNING: LLM returned unparseable JSON, defaulting to unclear")
         parsed = {
             "language": state["language"],
             "intent": "unclear",
@@ -282,8 +287,19 @@ def orchestrator_node(state: GraphState) -> GraphState:
         else:
             session.consecutive_unclear = 0
 
+    # LLM call failure vs. malformed output: `forced_by_pending_action` (yes/no confirmation on
+    # a staged plan-change/payment) never depended on this turn's LLM output in the first place
+    # -- session.pending_action already decided the route deterministically -- so a rate-limited
+    # LLM this turn shouldn't block that. Otherwise, an outright call failure (every failover
+    # candidate exhausted) means we genuinely have nothing to route on; escalate honestly instead
+    # of routing to clarify_node, which would tell the customer "I didn't catch that" -- false,
+    # since their speech was never the problem.
+    llm_unavailable = llm_call_failed and not forced_by_pending_action
+
     handoff_reason = ""
-    if sensitive:
+    if llm_unavailable:
+        handoff_reason = "LLM provider(s) unavailable this turn (rate-limited/exhausted) -- escalating instead of guessing."
+    elif sensitive:
         handoff_reason = "Sensitive intent detected (billing dispute, cancellation, fraud/security)."
     elif explicit_human_request:
         handoff_reason = "Customer explicitly asked for a human agent."
@@ -311,6 +327,7 @@ def orchestrator_node(state: GraphState) -> GraphState:
         "route": route,
         "unclear_escalate": unclear_escalate,
         "handoff_reason": handoff_reason,
+        "llm_unavailable": llm_unavailable,
         "call_end_requested": cut_call or bool(parsed.get("call_end_requested", False)),
         "language": detected_lang,
         # Aggressive tracking
@@ -390,7 +407,7 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
     _t_subagent_start = _time.time()
     print(f"  [SubAgent] route={route} | normalized_query={state['normalized_query'][:120]}")
     
-    reply = run_tool_agent(
+    reply, degraded = run_tool_agent(
         llm,
         domain_tools + [rag_tool],
         SUBAGENT_SYSTEM_PROMPT_TEMPLATE.format(
@@ -404,7 +421,7 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
         language=state["language"],
         show_debug=state.get("show_debug", False),
     )
-    
+
     _t_subagent_end = _time.time()
     print(f"  [SubAgent] RAG tracker: called={tracker.called} | last_score={tracker.last_score:.2f}" if tracker.called else f"  [SubAgent] RAG tracker: called=False | last_score=N/A")
     print(f"  [SubAgent] Took {_t_subagent_end - _t_subagent_start:.2f}s")
@@ -414,6 +431,14 @@ def _run_subagent(state: GraphState, route: str, tools_builder, rag_tool_builder
         "retrieval_score": tracker.last_score if tracker.called else 1.0,
         # no RAG call needed → don't penalize the confidence gate
     }
+    # `degraded` means run_tool_agent gave up and returned a generic "let me connect you
+    # to a human" fallback (LLM call failed, or came back with nothing usable) rather than
+    # a real answer -- that fallback TEXT alone isn't enough for the guardrail/front end to
+    # know a handoff is actually happening (retrieval_score defaults to 1.0 here since no RAG
+    # call was made, so the confidence gate wouldn't catch it), so surface it explicitly.
+    if degraded:
+        result["handoff"] = True
+        result["handoff_reason"] = "Sub-agent tool-calling loop failed or produced no usable reply."
     if session.escalation_requested:
         result["handoff"] = True
         result["handoff_reason"] = session.escalation_reason or "Escalation requested by sub-agent."

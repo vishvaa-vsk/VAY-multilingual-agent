@@ -44,6 +44,7 @@ dependencies = [
     "watchdog",
     "optimum-quanto>=0.2.7",
     "accelerate>=1.14.0",
+    "langchain-openai>=1.5.1",
 ]
 
 [dependency-groups]

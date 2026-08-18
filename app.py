@@ -467,6 +467,29 @@ if "current_pipeline_data" not in st.session_state:
 if "last_processed_event_id" not in st.session_state:
     st.session_state.last_processed_event_id = None
 
+# TTS chunk pipelining state (see tts-opt.md) — mirrors the CLI voice
+# pipeline's "chunk 0 fast, rest overlapped" approach, adapted for the
+# browser-audio-element model: the browser (not playsound3) does playback,
+# and the AUDIO_ENDED event from the strands component tells us when it's
+# safe to hand over the next chunk.
+if "tts_chunk_queue" not in st.session_state:
+    st.session_state.tts_chunk_queue = []
+if "tts_next_future" not in st.session_state:
+    st.session_state.tts_next_future = None
+if "tts_more_pending" not in st.session_state:
+    # True while the chunk currently in audio_to_play is NOT the reply's
+    # last one — tells the frontend to hold off switching to "listening"
+    # (and resuming the mic) until the whole reply has actually finished,
+    # instead of flickering between chunks.
+    st.session_state.tts_more_pending = False
+if "tts_lang" not in st.session_state:
+    st.session_state.tts_lang = "en"
+if "tts_executor" not in st.session_state:
+    import concurrent.futures
+    st.session_state.tts_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="tts-chunk"
+    )
+
 # Track toggle changes or button actions
 if "component_key" not in st.session_state:
     st.session_state.component_key = 0
@@ -643,18 +666,37 @@ def process_real_audio(base64_audio):
             st.session_state.pending_handoff = True
             # Proceed to TTS generation below so the user hears the goodbye/handoff message FIRST
             
-        # 8. Generate TTS
+        # 8. Generate TTS — chunk 0 only, synchronously (bounds time-to-first-
+        # audio to the first sentence instead of the whole reply, same idea
+        # as the CLI voice pipeline's _speak_pipelined). Remaining chunks are
+        # queued and pre-synthesized in the background while chunk 0 plays;
+        # the AUDIO_ENDED handler below hands them over as they finish.
         t_tts_start = time.time()
-        print("[process_real_audio] Generating TTS...")
-        tts_bytes = generate_text_to_speech(reply, lang_code=detected_lang)
+        print("[process_real_audio] Generating TTS (chunk 0)...")
+        from vay.tts.engine import _clean_text_for_speech, _split_into_speech_chunks
+        chunks = _split_into_speech_chunks(_clean_text_for_speech(reply))
+        tts_bytes = generate_text_to_speech(chunks[0], lang_code=detected_lang)
         t_tts_end = time.time()
-        print(f"[process_real_audio] TTS Generated [Took {t_tts_end - t_tts_start:.2f}s]")
-        
+        print(f"[process_real_audio] TTS chunk 0 generated [Took {t_tts_end - t_tts_start:.2f}s] ({len(chunks)} chunk(s) total)")
+
         if tts_bytes:
             st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
             st.session_state.status = "speaking"
+            st.session_state.tts_lang = detected_lang
+            st.session_state.tts_more_pending = len(chunks) > 1
+            if len(chunks) > 1:
+                st.session_state.tts_chunk_queue = chunks[2:]
+                st.session_state.tts_next_future = st.session_state.tts_executor.submit(
+                    generate_text_to_speech, chunks[1], detected_lang
+                )
+            else:
+                st.session_state.tts_chunk_queue = []
+                st.session_state.tts_next_future = None
         else:
             st.session_state.status = "idle"
+            st.session_state.tts_chunk_queue = []
+            st.session_state.tts_next_future = None
+            st.session_state.tts_more_pending = False
             
         print("[process_real_audio] Done! Triggering rerun.")
         st.rerun()
@@ -731,7 +773,7 @@ if not st.session_state.session_started:
             <p style="color: #f8fafc; font-size: 18px; font-weight: 600; margin-top: -30px; margin-bottom: 10px; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);">Multilingual Voice Agent</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         with st.container():
             st.markdown("<div style='padding: 0px 24px 24px 24px; background: rgba(0, 0, 0, 0); border: 0px solid rgba(255,255,255,0); border-top: none; border-radius: 0 0 16px 16px; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 0px 50px rgba(0, 0, 0, 0); margin-top: -15px;'>", unsafe_allow_html=True)
             
@@ -912,7 +954,6 @@ else:
         unsafe_allow_html=True
     )
 
-
     # ----------------- MAIN VOICE INTERFACE (full-width) -----------------
     # Load VAY logo
     _logo_b64 = ""
@@ -963,6 +1004,7 @@ else:
         glassSize=glass_size,
         status=st.session_state.status,
         audio_data=st.session_state.audio_to_play,
+        more_chunks_pending=st.session_state.get("tts_more_pending", False),
         key=f"strands_element_{st.session_state.component_key}"
     )
 
@@ -975,9 +1017,27 @@ else:
         if event_id and event_id != st.session_state.get("last_processed_event_id"):
             st.session_state.last_processed_event_id = event_id
 
-            if event_name == "AUDIO_ENDED":
+            # NOTE: the frontend (component_strands/frontend/index.html) only
+            # ever sends "audio_finished" on both natural playback-end and
+            # playback-error — "AUDIO_ENDED" is never actually emitted, kept
+            # here only in case a future frontend build starts sending it.
+            if event_name in ("AUDIO_ENDED", "audio_finished"):
                 if st.session_state.status == "speaking":
-                    if st.session_state.get("pending_handoff"):
+                    # Bumping component_key forces a full remount of the
+                    # WebGL/audio component — which also throws away its
+                    # frontend-side mic session (the `myvad`/`isRecording`
+                    # VAD state that `startRecording()` set up once at call
+                    # start and that the JS side reuses turn after turn to
+                    # auto-resume listening after playback). Only the
+                    # pending_handoff path actually wants a hard reset (it
+                    # navigates back to the homepage entirely); every other
+                    # transition out of "speaking" — end of reply or a
+                    # same-reply chunk handoff — must keep the same
+                    # component instance mounted, or the mic never comes
+                    # back on its own after a reply.
+                    bump_component_key = False
+
+                    def _do_handoff_reset():
                         # Human agent connected -> break the chain: cut the call,
                         # stop the pipeline, and return to the homepage (same
                         # reset as pressing the Cancel/End Session button).
@@ -989,21 +1049,81 @@ else:
                         st.session_state.pop("agent_session", None)
                         st.session_state.status = "idle"
                         st.session_state.audio_to_play = None
+                        st.session_state.tts_chunk_queue = []
+                        st.session_state.tts_next_future = None
+                        st.session_state.tts_more_pending = False
+
+                    if st.session_state.get("tts_next_future") is not None:
+                        # More of the reply is queued — hand over the chunk
+                        # that's been synthesizing in the background while the
+                        # one that just ended was playing, and kick off the
+                        # next-next chunk (if any) so it overlaps in turn.
+                        # This takes priority over pending_handoff: even on a
+                        # goodbye/handoff reply, the user needs to hear every
+                        # queued chunk (e.g. "let me connect you...") before
+                        # the call gets torn down — checking pending_handoff
+                        # first would cut the reply off after chunk 0.
+                        future = st.session_state.tts_next_future
+                        try:
+                            next_bytes = future.result(timeout=30)
+                        except Exception as e:
+                            print(f"[TTS chunk] background synthesis failed: {e}")
+                            next_bytes = None
+
+                        if next_bytes:
+                            st.session_state.audio_to_play = encode_audio_bytes(next_bytes)
+                            st.session_state.status = "speaking"
+                            queue = st.session_state.tts_chunk_queue
+                            # Is there anything queued AFTER this chunk we're
+                            # about to hand over? If so, tell the frontend to
+                            # keep holding off on "listening" past this one too.
+                            st.session_state.tts_more_pending = bool(queue)
+                            if queue:
+                                st.session_state.tts_chunk_queue = queue[1:]
+                                st.session_state.tts_next_future = st.session_state.tts_executor.submit(
+                                    generate_text_to_speech, queue[0], st.session_state.tts_lang
+                                )
+                            else:
+                                st.session_state.tts_next_future = None
+                        else:
+                            # Synthesis failed — stop here rather than getting stuck.
+                            st.session_state.tts_more_pending = False
+                            if st.session_state.get("pending_handoff"):
+                                bump_component_key = True
+                                _do_handoff_reset()
+                            else:
+                                st.session_state.status = "listening"
+                                st.session_state.audio_to_play = None
+                                st.session_state.tts_next_future = None
+                                st.session_state.tts_chunk_queue = []
+                    elif st.session_state.get("pending_handoff"):
+                        # No more chunks queued — the whole reply has been
+                        # played, safe to tear the call down now.
+                        bump_component_key = True
+                        _do_handoff_reset()
                     else:
                         st.session_state.status = "listening"
-                    st.session_state.component_key += 1
+                        st.session_state.audio_to_play = None
+                    if bump_component_key:
+                        st.session_state.component_key += 1
                     st.rerun()
 
             elif event_name == "mic_start":
                 if st.session_state.status != "listening":
                     st.session_state.status = "listening"
                     st.session_state.audio_to_play = None
+                    st.session_state.tts_chunk_queue = []
+                    st.session_state.tts_next_future = None
+                    st.session_state.tts_more_pending = False
                     st.rerun()
 
             elif event_name in ("mic_pause", "mic_stop"):
                 if st.session_state.status != "idle":
                     st.session_state.status = "idle"
                     st.session_state.audio_to_play = None
+                    st.session_state.tts_more_pending = False
+                    st.session_state.tts_chunk_queue = []
+                    st.session_state.tts_next_future = None
                     st.rerun()
 
             elif event_name == "audio_recorded":
@@ -1011,12 +1131,6 @@ else:
                 base64_audio = event_data.get("audio")
                 if base64_audio:
                     process_real_audio(base64_audio)
-
-            elif event_name == "audio_finished":
-                if st.session_state.status != "listening":
-                    st.session_state.status = "listening"
-                    st.session_state.audio_to_play = None
-                    st.rerun()
 
             elif event_name in ("end_session", "escalate_click"):
                 st.session_state.session_started = False
@@ -1027,5 +1141,8 @@ else:
                 st.session_state.pending_handoff = False
                 st.session_state.status = "idle"
                 st.session_state.audio_to_play = None
+                st.session_state.tts_chunk_queue = []
+                st.session_state.tts_next_future = None
+                st.session_state.tts_more_pending = False
                 st.session_state.component_key += 1
                 st.rerun()
