@@ -123,6 +123,7 @@ from vay.graph.nodes.utils import (
     closing_node,
     guardrail_node,
     human_handoff_node,
+    identity_mismatch_node,
     route_after_guardrail,
     route_after_orchestrator,
     tts_node,
@@ -141,6 +142,7 @@ def build_graph():
     graph.add_node("coverage", coverage_node)
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("human_handoff", human_handoff_node)
+    graph.add_node("identity_mismatch", identity_mismatch_node)
     graph.add_node("warning", warning_node)  # aggressive caller 1st offence
     graph.add_node("chitchat", chitchat_node)
     graph.add_node("clarify", clarify_node)
@@ -157,6 +159,7 @@ def build_graph():
             "complaints": "complaints",
             "coverage": "coverage",
             "human_handoff": "human_handoff",
+            "identity_mismatch": "identity_mismatch",
             "warning": "warning",
             "chitchat": "chitchat",
             "clarify": "clarify",
@@ -177,6 +180,7 @@ def build_graph():
     )
 
     graph.add_edge("human_handoff", "tts")
+    graph.add_edge("identity_mismatch", "tts")
     graph.add_edge("warning", "tts")  # warning message goes to TTS then END
     graph.add_edge("chitchat", "tts")
     graph.add_edge("clarify", "tts")

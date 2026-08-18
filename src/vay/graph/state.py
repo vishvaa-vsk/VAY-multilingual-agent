@@ -152,6 +152,13 @@ class GraphState(TypedDict, total=False):
     # short-circuit the sub-agent path when appropriate.
     warning_reply: str
 
+    # Set by orchestrator_node when this utterance names a phone_number entity that differs
+    # from the call's verified session.phone_number (e.g. "change the plan for my friend's
+    # number..."). Non-empty means route_after_orchestrator sends the call straight to the
+    # identity_mismatch node's fixed refusal instead of a sub-agent -- see the guardrail
+    # comment in orchestrator_node for why this can't be left to the sub-agent LLM.
+    identity_mismatch_reply: str
+
 
 AgentState = GraphState
 

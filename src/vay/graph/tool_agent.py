@@ -262,6 +262,7 @@ _SCRIPT_RANGES: dict[str, tuple[int, int]] = {
     "ja": (0x3040, 0x30FF),  # Hiragana/Katakana (kanji overlaps CJK, this is enough of a signal)
     "ko": (0xAC00, 0xD7A3),  # Hangul
     "zh": (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    "ru": (0x0400, 0x04FF),  # Cyrillic
 }
 
 
@@ -285,6 +286,7 @@ _LANGUAGE_NAMES: dict[str, str] = {
     "ja": "Japanese",
     "ko": "Korean",
     "zh": "Chinese (Simplified)",
+    "ru": "Russian",
 }
 
 
