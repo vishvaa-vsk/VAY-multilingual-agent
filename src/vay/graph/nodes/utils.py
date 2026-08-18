@@ -38,6 +38,7 @@ from vay.graph.utils import (
     PII_LEAK_PATTERNS,
     UNCERTAINTY_PATTERNS,
     _llm,
+    _redact_pii,
     localized,
     log_handoff,
 )
@@ -138,6 +139,43 @@ import re  # noqa: E402 (import after the function that uses it — kept here to
 
 def human_handoff_node(state: GraphState) -> GraphState:
     """Log the handoff context and return the localized handoff message."""
+    reason = state.get("handoff_reason", "unspecified")
+    transcript = state["transcript"]
+    # A PII-disclosure handoff (see orchestrator_node's guardrail) exists specifically to keep
+    # an Aadhaar/card/bank-account number out of downstream systems -- writing the RAW
+    # transcript to handoff_log.jsonl right after would defeat that. Matched on the exact
+    # "PII disclosure:" prefix orchestrator_node sets for this case.
+    if reason.startswith("PII disclosure:"):
+        transcript = _redact_pii(transcript)
+    log_handoff(
+        {
+            "phone_number": state["phone_number"],
+            "transcript": transcript,
+            "intent": state.get("intent"),
+            "entities": state.get("entities"),
+            "normalized_query": state.get("normalized_query"),
+            "route": state.get("route"),
+            "reason": reason,
+            "draft_reply_at_handoff": state.get("draft_reply"),
+        }
+    )
+    return {
+        "final_reply": localized(HANDOFF_MESSAGE_TEMPLATES, state.get("language", "en")),
+        "handoff": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Identity-mismatch node
+# ---------------------------------------------------------------------------
+
+def identity_mismatch_node(state: GraphState) -> GraphState:
+    """Speak the fixed identity-mismatch refusal computed by orchestrator_node, bypassing
+    every sub-agent entirely -- there is nothing for a sub-agent LLM to do here since the
+    requested action targets a phone number this call was never verified for (see
+    orchestrator_node's identity-mismatch guardrail comment). Logged the same way a human
+    handoff is, since a caller repeatedly trying to act on someone else's number is worth
+    an auditable record even though no human takes over the call."""
     log_handoff(
         {
             "phone_number": state["phone_number"],
@@ -146,14 +184,10 @@ def human_handoff_node(state: GraphState) -> GraphState:
             "entities": state.get("entities"),
             "normalized_query": state.get("normalized_query"),
             "route": state.get("route"),
-            "reason": state.get("handoff_reason", "unspecified"),
-            "draft_reply_at_handoff": state.get("draft_reply"),
+            "reason": "Identity mismatch: entities.phone_number differs from verified session number.",
         }
     )
-    return {
-        "final_reply": localized(HANDOFF_MESSAGE_TEMPLATES, state.get("language", "en")),
-        "handoff": True,
-    }
+    return {"final_reply": state.get("identity_mismatch_reply", "")}
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +306,8 @@ def route_after_orchestrator(state: GraphState) -> str:
     5. Chitchat (understood, nothing actionable) → chitchat node
     6. Unclear/low-confidence (with escalation) → human_handoff
     7. Unclear/low-confidence (first time) → clarify
-    8. Valid route → billing / plans / complaints / coverage
+    8. Identity mismatch (entity phone_number != verified session number) → identity_mismatch
+    9. Valid route → billing / plans / complaints / coverage
     """
     # Call was cut due to repeated abuse — treat as closing so TTS plays the goodbye
     if state.get("call_end_requested") and state.get("warning_reply"):
@@ -299,6 +334,12 @@ def route_after_orchestrator(state: GraphState) -> str:
 
     if state.get("route") == "unclear" or state.get("nlu_confidence", 0.0) < DEFAULT_NLU_CONFIDENCE:
         return "human_handoff" if state.get("unclear_escalate") else "clarify"
+
+    # Entity phone_number named a DIFFERENT number than the one verified for this call --
+    # refuse in code rather than letting a sub-agent silently act on the wrong number (see
+    # orchestrator_node's identity-mismatch guardrail).
+    if state.get("identity_mismatch_reply"):
+        return "identity_mismatch"
 
     return state["route"]  # billing | plans | complaints | coverage
 
