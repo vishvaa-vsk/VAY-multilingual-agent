@@ -1126,6 +1126,25 @@ else:
                     st.session_state.tts_next_future = None
                     st.rerun()
 
+            elif event_name == "barge_in":
+                # Frontend already paused the <audio> element itself (see
+                # onSpeechStart in component_strands/frontend/index.html) —
+                # this just brings server-side state in line so the next
+                # rerun doesn't try to resume/replay the interrupted reply.
+                # Any in-flight tts_next_future for the abandoned reply is
+                # simply left to finish and get garbage-collected; the
+                # upcoming audio_recorded for this barge-in overwrites
+                # tts_chunk_queue/tts_next_future/audio_to_play wholesale
+                # once its own reply is ready.
+                if st.session_state.status == "speaking":
+                    print("[VoiceCall] Barge-in detected — TTS playback interrupted.")
+                    st.session_state.status = "listening"
+                    st.session_state.audio_to_play = None
+                    st.session_state.tts_chunk_queue = []
+                    st.session_state.tts_next_future = None
+                    st.session_state.tts_more_pending = False
+                    st.rerun()
+
             elif event_name == "audio_recorded":
                 st.session_state.status = "thinking"
                 base64_audio = event_data.get("audio")
