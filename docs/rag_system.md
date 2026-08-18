@@ -1,12 +1,14 @@
 # Knowledge Retrieval & Scoped Hybrid RAG
 
-This document describes the Retrieval-Augmented Generation (RAG) architecture, multi-collection storage, hybrid search fusing BM25 with dense vector embeddings, and semantic document ingestion in VAY.
+This document is a technical study and reference guide for the domain-scoped ChromaDB collections, hybrid retrieval fusing BM25 with dense vector embeddings, and semantic document ingestion in VAY.
 
 ---
 
-## 1. Multi-Collection Knowledge Base Architecture
+## 1. Multi-Collection Architecture
 
-To prevent cross-domain hallucination and ensure high-precision retrieval, VAY segments knowledge into 5 domain-scoped ChromaDB collections (`src/vay/rag/vector_store.py`).
+**Primary Code Reference:** [`src/vay/rag/vector_store.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/vector_store.py)
+
+To prevent cross-domain hallucinations, VAY segments knowledge into 5 domain-scoped ChromaDB collections defined in [`KB_COLLECTIONS`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/vector_store.py#L35):
 
 ```mermaid
 graph TD
@@ -27,15 +29,27 @@ graph TD
     end
 ```
 
-### Collection Isolation Rules:
-- Sub-agents are only provided access to their respective domain collection.
-- `compliance_policy` is never exposed as an LLM tool; it is queried directly by the guardrail verification layer via `compliance_policy_search()`.
+```python
+# Code snippet from src/vay/rag/vector_store.py
+KB_COLLECTIONS: dict[str, str] = {
+    "billing_policy": "billing_policy",
+    "product_catalog": "product_catalog",
+    "support_faq": "support_faq",
+    "technical_kb": "technical_kb",
+    "compliance_policy": "compliance_policy",
+}
+```
+
+- **Scoped Isolation**: Each sub-agent is bound strictly to its domain collection via [`build_billing_rag_tool`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/retriever.py), [`build_product_rag_tool`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/retriever.py), etc.
+- **Compliance Isolation**: `compliance_policy` is never exposed as an LLM tool; it is queried exclusively by [`guardrail_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py) via [`compliance_policy_search()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/retriever.py#L182).
 
 ---
 
-## 2. Hybrid Retrieval Engine (`src/vay/rag/hybrid.py`)
+## 2. Hybrid Retrieval Engine (BM25 + Dense Vectors)
 
-Pure dense vector search with small embedding models (`all-MiniLM-L6-v2`) frequently struggles with precise alphanumeric tokens (e.g., plan codes like `PPD_VALUE`, rupee amounts like `Rs 299`, or data limits like `1.5 GB/day`). VAY solves this with an integrated **Hybrid BM25 + Vector Fusion Engine**.
+**Primary Code Reference:** [`src/vay/rag/hybrid.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/hybrid.py)
+
+Small dense embedding models (`all-MiniLM-L6-v2`) frequently lose precision on exact plan codes (e.g. `PPD_VALUE`), rupee prices (`Rs 299`), and data allowances (`2 GB/day`). VAY fuses BM25 term frequency with vector cosine similarity.
 
 ```mermaid
 flowchart LR
@@ -55,61 +69,87 @@ flowchart LR
     TopK --> ReturnDocs[Retrieved Document Context]
 ```
 
-### Fusion Algorithm:
-1. **Dense Vector Search**: ChromaDB computes cosine distances and converts them to similarity scores ($S_{\text{dense}} = 1 - \text{distance}$).
-2. **BM25 Keyword Search**: `rank_bm25.BM25Okapi` evaluates term frequency across document chunks in the target collection.
-3. **Score Normalization**: Both dense and sparse score distributions are normalized to $[0, 1]$ via min-max scaling.
-4. **Fused Score**:
-   $$\text{Score}_{\text{hybrid}} = 0.5 \cdot \text{Score}_{\text{dense, norm}} + 0.5 \cdot \text{Score}_{\text{bm25, norm}}$$
-5. **Reranking**: Results are sorted descending by the fused score, returning the top $k$ chunks (default $k=4$).
+### Fusion Algorithm in Code:
+```python
+# Code snippet from src/vay/rag/hybrid.py
+def search(self, collection_name: str, query: str, top_k: int = 4) -> list[dict[str, Any]]:
+    # 1. Dense vector query via ChromaDB
+    vec_results = chroma.query_collection(collection_name, query_texts=[query], n_results=top_k * 2)
+    
+    # 2. Sparse keyword query via BM25Okapi
+    bm25_index = self._get_bm25_index(collection_name)
+    tokenized_query = re.findall(r"\w+", query.lower())
+    bm25_scores = bm25_index.get_scores(tokenized_query)
+    
+    # 3. Min-Max normalization & 50/50 fusion
+    norm_vec = min_max_scale(vec_scores)
+    norm_bm25 = min_max_scale(bm25_scores)
+    fused_score = 0.5 * norm_vec + 0.5 * norm_bm25
+    
+    # 4. Sort and return top_k
+    return sorted(candidates, key=lambda x: x["score"], reverse=True)[:top_k]
+```
 
 ---
 
-## 3. Semantic Document Ingestion Pipeline
+## 3. Semantic Document Ingestion & Chunking
 
-Knowledge base documents are stored as structured markdown files in `data/kb/` and processed using `src/vay/rag/manager_ingest.py`.
+**Primary Code References:** [`src/vay/rag/manager_ingest.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/manager_ingest.py), [`src/vay/rag/chunking.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/chunking.py)
 
-### 3.1 Sentence-Boundary Chunking (`src/vay/rag/chunking.py`)
-- **Token Window Alignment**: Target chunk size is ~500 characters with ~100 characters overlap, optimized for the 256-token context window of `all-MiniLM-L6-v2`.
-- **Heading Context Propagation**: Parent section headers (`## 1. Postpaid Roaming Rates`) are prepended to every subordinate chunk. This ensures that standalone sentences retain full semantic context during vector search.
-- **Content-Addressed Hashing**: Each chunk is assigned a deterministic SHA-256 ID based on its text and source. Ingestion is fully idempotent: re-running `build_kb.py` updates modified chunks without duplicating existing records.
-
-### 3.2 Categorization (`src/vay/rag/categorizer.py`)
-- **Guided Categorization**: Domain-specific category tags (e.g., `["tariff", "late_fee", "roaming"]`) are attached during ingestion for filtered retrieval.
-- **Unsupervised Fallback**: Unlabeled text uses KMeans clustering over TF-IDF vectors to generate automatic topic labels.
-
----
-
-## 4. Confidence Thresholding & Safety Escalation
-
-Every retrieval turn evaluates the highest similarity score obtained:
+Knowledge base documents (`data/kb/*.md`) are parsed and ingested using a sentence-boundary chunker:
 
 ```python
+# Code snippet from src/vay/rag/chunking.py
+def chunk_markdown(
+    markdown_text: str,
+    chunk_size: int = 500,
+    chunk_overlap: int = 100,
+) -> list[Chunk]:
+    # 1. Tokenize into sentences using NLTK
+    sentences = nltk.sent_tokenize(markdown_text)
+    
+    # 2. Propagate parent section headings to retain semantic context
+    # 3. Generate content-addressed SHA-256 chunk IDs for idempotent upserts
+```
+
+- **Target Window**: ~500 characters with ~100 characters overlap, optimized for the 256-token context window of `all-MiniLM-L6-v2`.
+- **Heading Context Propagation**: Prepend parent section headers (e.g. `## 1. Postpaid Roaming Rates`) to every subordinate chunk so isolated sentences retain complete semantic context.
+- **Idempotent Ingestion**: Chunk IDs are content-addressed hashes (`sha256(text + source)`). Re-ingesting updates changed chunks without creating duplicates.
+
+---
+
+## 4. Confidence Tracking & Scoring
+
+**Primary Code Reference:** [`src/vay/rag/retriever.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/retriever.py#L35-L65)
+
+The [`RetrievalTracker`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/retriever.py#L35) tracks the highest relevance score encountered during a sub-agent's execution turn:
+
+```python
+# Code snippet from src/vay/rag/retriever.py
 class RetrievalTracker:
-    def __init__(self):
+    def __init__(self) -> None:
         self.best_similarity: float = 0.0
 
-    def update(self, score: float):
+    def update(self, score: float) -> None:
         if score > self.best_similarity:
             self.best_similarity = score
 ```
 
-- **Guardrail Gate**: If `retrieval_score < DEFAULT_MIN_SIMILARITY` (configured at 0.30 in runtime, with an unresolved safety threshold recommendation of 0.75 in compliance audit documents), the system rejects the draft answer and safely transfers the caller to a human agent.
+- **Guardrail Floor**: If `best_similarity < min_similarity` (default 0.30), [`guardrail_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L74) rejects the draft answer and transfers the call to a human agent.
 
 ---
 
-## 5. Knowledge Base Management Commands
+## 5. Knowledge Base Administration CLI
 
-Build or reset knowledge base collections using the CLI:
+**Primary Code References:** [`scripts/build_kb.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/scripts/build_kb.py), [`scripts/manage_kb.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/scripts/manage_kb.py)
 
 ```bash
-# Ingest all markdown files in data/kb/ into ChromaDB
+# Ingest all 5 markdown files into ChromaDB
 uv run python scripts/build_kb.py
 
-# Wipe all collections and rebuild cleanly
+# Wipe and rebuild cleanly
 uv run python scripts/build_kb.py --reset
 
-# Manage individual collections
+# Inspect collections and chunk counts
 uv run python scripts/manage_kb.py --list
-uv run python scripts/manage_kb.py --collection product_catalog --rebuild
 ```

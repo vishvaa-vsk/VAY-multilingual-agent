@@ -1,12 +1,12 @@
 # LangGraph Agentic Architecture & Orchestration
 
-This document details the multi-agent state machine, conversational routing, tool-calling loops, and orchestration graph powering VAY.
+This document is a technical study and reference guide for the multi-agent state machine, conversational routing, tool-calling loops, and orchestration graph in VAY.
 
 ---
 
 ## 1. Multi-Agent Architectural Overview
 
-VAY operates on a two-tier LangGraph architecture consisting of a central **Orchestrator NLU Node** and four domain-scoped **Sub-Agent Nodes** (Billing, Plans, Complaints, Coverage), complemented by guardrail, clarifying, warning, closing, human handoff, and text-to-speech nodes.
+VAY operates on a two-tier LangGraph architecture: a central **Orchestrator NLU Node** routes intent to four specialized **Domain Sub-Agents** (Billing, Plans, Complaints, Coverage), supported by guardrail, warning, clarifying, closing, and TTS nodes.
 
 ```mermaid
 flowchart TD
@@ -18,11 +18,13 @@ flowchart TD
     Router -->|abusive & strike == 1| Warning[warning_node]
     Router -->|abusive & strike >= 2| Closing
     Router -->|sensitive / unclear / conf < 0.4| Handoff[human_handoff_node]
+    Router -->|identity_mismatch| IdentityMismatch[identity_mismatch_node]
     Router -->|route == 'billing'| BillingAgent[billing_node]
     Router -->|route == 'plans'| PlansAgent[plans_node]
     Router -->|route == 'complaints'| ComplaintsAgent[complaints_node]
     Router -->|route == 'coverage'| CoverageAgent[coverage_node]
     Router -->|route == 'clarify'| Clarify[clarify_node]
+    Router -->|route == 'chitchat'| Chitchat[chitchat_node]
     
     subgraph SubAgentExecution ["Sub-Agent Tool Loop (Max 4-6 Iterations)"]
         SubAgentLLM[Groq ChatGroq LLM] --> ToolDecision{Tool Calls Required?}
@@ -52,6 +54,8 @@ flowchart TD
     Closing --> TTS
     Warning --> TTS
     Clarify --> TTS
+    Chitchat --> TTS
+    IdentityMismatch --> TTS
     Handoff --> TTS
     
     TTS --> END([Spoken Reply & Await Next Turn])
@@ -59,11 +63,14 @@ flowchart TD
 
 ---
 
-## 2. Graph State Schema (`src/vay/graph/state.py`)
+## 2. Graph State Schema
 
-All nodes operate over a shared `GraphState` TypedDict maintaining session and multi-turn context:
+**Primary Code Reference:** [`src/vay/graph/state.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/state.py)
+
+The [`GraphState`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/state.py#L32) TypedDict carries conversational and operational state across all nodes:
 
 ```python
+# Code snippet from src/vay/graph/state.py
 class GraphState(TypedDict, total=False):
     # Customer and Call Metadata
     phone_number: str
@@ -76,30 +83,72 @@ class GraphState(TypedDict, total=False):
     route: str
     normalized_query: str
     entities: dict[str, Any]
-    confidence: float
+    nlu_confidence: float
     sensitive: bool
     call_end_requested: bool
-    abusive: bool
     
-    # Execution & Sub-Agent State
+    # Sub-Agent & Execution State
     current_agent: str
     draft_reply: str
     final_reply: str
     retrieval_score: float
     tool_calls_made: list[dict[str, Any]]
     
-    # Safety and Escalation
+    # Safety and Handoff State
     handoff: bool
     handoff_reason: str
-    abuse_strike_count: int
     session: SessionContext
+    barge_in_event: threading.Event
 ```
 
 ---
 
-## 3. Orchestrator Node (`src/vay/graph/nodes/orchestrator.py`)
+## 3. Workflow Graph Construction
 
-The orchestrator receives the raw transcript and conversation history, outputting strict structured JSON:
+**Primary Code Reference:** [`src/vay/graph/workflow.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/workflow.py)
+
+The [`build_graph()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/workflow.py#L42) function compiles the StateGraph:
+
+```python
+# Code snippet from src/vay/graph/workflow.py
+builder = StateGraph(GraphState)
+
+# Add Nodes
+builder.add_node("orchestrator", orchestrator_node)
+builder.add_node("billing", billing_node)
+builder.add_node("plans", plans_node)
+builder.add_node("complaints", complaints_node)
+builder.add_node("coverage", coverage_node)
+builder.add_node("guardrail", guardrail_node)
+builder.add_node("human_handoff", human_handoff_node)
+builder.add_node("tts", tts_node)
+
+# Conditional Routing
+builder.add_conditional_edges(
+    "orchestrator",
+    route_after_orchestrator,
+    {
+        "billing": "billing",
+        "plans": "plans",
+        "complaints": "complaints",
+        "coverage": "coverage",
+        "human_handoff": "human_handoff",
+        "clarify": "clarify",
+        "warning": "warning",
+        "closing": "closing",
+        "chitchat": "chitchat",
+        "identity_mismatch": "identity_mismatch",
+    },
+)
+```
+
+---
+
+## 4. Orchestrator Node & NLU Classification
+
+**Primary Code Reference:** [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py)
+
+The [`orchestrator_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py#L164) prompts the LLM ([`ORCHESTRATOR_SYSTEM_PROMPT`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L32)) and extracts structured JSON:
 
 ```json
 {
@@ -111,58 +160,71 @@ The orchestrator receives the raw transcript and conversation history, outputtin
   "confidence": 0.95,
   "sensitive": false,
   "call_end_requested": false,
-  "abusive": false
+  "aggressive": false
 }
 ```
 
-### Key Orchestrator Behaviors:
-1. **Pending Action Priority**: If `session.pending_action` exists from a prior turn (e.g., an unconfirmed plan upgrade awaiting confirmation), a bare "yes" or "no" transcript is force-routed back to the originating sub-agent without re-classification.
-2. **Abuse Multi-Strike Tracking**: Callers using abusive or aggressive language increment `abuse_strike_count`. The first occurrence triggers `warning_node`; a second occurrence triggers polite call termination via `closing_node`.
-3. **Safety Confidence Floor**: If orchestrator NLU confidence is below 0.40, the conversation routes directly to `human_handoff_node` or `clarify_node`.
+### Key Orchestrator Features:
+1. **Account Context Pre-Fetch ([`_fetch_account_context`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py#L69))**: Fetches active plan, outstanding balance, and recent tickets directly from SQLite to avoid redundant initial tool calls.
+2. **Pending Action Priority**: If `session.pending_action` exists (e.g. unconfirmed plan upgrade), routing is forced back to the originating sub-agent on yes/no affirmations.
+3. **Sensitive PII Detection ([`_contains_sensitive_pii`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py))**: Directly forces human handoff when Aadhaar, card, or bank account numbers appear in the transcript.
 
 ---
 
-## 4. Domain Sub-Agents
+## 5. Domain Sub-Agents & Tools
 
-Each sub-agent is specialized for a distinct domain of customer care and is bound strictly to its own domain tools and scoped RAG retriever.
+**Primary Code References:** [`src/vay/graph/nodes/agents.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/agents.py), [`src/vay/tools/`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/)
 
-### 4.1 Sub-Agent Matrix
+Each sub-agent runs [`_run_subagent`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py#L350), closing over customer `SessionContext`:
 
-| Sub-Agent Node | Domain Responsibility | Bound Tools (`src/vay/tools/`) | Scoped RAG Collection |
+| Sub-Agent Node | Domain Responsibilities | Bound Tools ([`src/vay/tools/`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/)) | Scoped RAG Collection |
 |---|---|---|---|
-| `billing_node` | Balances, invoices, payments, tariff queries | `getBalance`, `getBillBreakup`, `getDueDate`, `sendPaymentLink`*, `explainCharge` | `billing_policy` |
-| `plans_node` | Plan comparisons, upgrades, add-ons, validity | `listPlans`, `comparePlans`, `changePlan`*, `activateAddOn`, `checkEligibility` | `product_catalog` |
-| `complaints_node` | Ticket creation, status tracking, SLA inquiries | `createComplaint`, `getTicketStatus`, `runTroubleshootFlow`, `escalateToHuman` | `support_faq` |
-| `coverage_node` | Signal checks, tower outages, APN/eSIM setup | `checkCoverage`, `getOutageStatus`, `getDeviceSettings`, `guideSimSwap`, `getTicketStatus` | `technical_kb` |
+| [`billing_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/agents.py#L22) | Invoices, balances, payment links, tariff explanations | `getBalance`, `getBillBreakup`, `getDueDate`, `sendPaymentLink`*, `explainCharge` | `billing_policy` |
+| [`plans_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/agents.py#L38) | Plan upgrades, comparisons, add-ons, validity | `listPlans`, `comparePlans`, `changePlan`*, `activateAddOn`, `checkEligibility` | `product_catalog` |
+| [`complaints_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/agents.py#L54) | Support tickets, SLA checks, troubleshooting | `createComplaint`, `getTicketStatus`, `runTroubleshootFlow`, `escalateToHuman` | `support_faq` |
+| [`coverage_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/agents.py#L70) | Signal strength, tower outages, APN/eSIM setup | `checkCoverage`, `getOutageStatus`, `getDeviceSettings`, `guideSimSwap`, `getTicketStatus` | `technical_kb` |
 
-*\* Requires two-phase code-enforced consent verification.*
-
----
-
-## 5. Bounded Tool-Calling Loop (`src/vay/graph/tool_agent.py`)
-
-Sub-agents execute tools iteratively up to a bounded limit (`MAX_TOOL_ITERATIONS = 4` to `6`).
-
-### Loop Optimizations and Guardrails:
-1. **Near-Duplicate Query Guard (`_is_near_duplicate_query`)**:
-   - Calculates Jaccard token overlap (threshold 0.50) over the free-text `query` parameter across successive tool calls within the same turn.
-   - Prevents the LLM from executing repeated, slightly reworded searches (e.g., `"postpaid travel plan"` vs `"travel pack requirement"`), saving up to 100+ seconds in unnecessary roundtrips.
-2. **STOP_AND_SAY Sentinel**:
-   - When a sensitive tool is executed, it returns `STOP_AND_SAY: <consent_script>`.
-   - The loop detects this sentinel and returns the exact consent script immediately to the customer, bypassing LLM paraphrasing entirely.
-3. **Anti-Repetition Detox (`_detoxify_repetition`)**:
-   - Detects looping token patterns in small models (`llama-3.1-8b-instant`), especially when translating numerical figures to Indic languages.
-   - Verifies terminal punctuation via `_is_complete_reply()`. If a truncated response is an incomplete sentence fragment, a clean localized fallback message is returned instead.
+*\* Sensitive actions requiring two-phase consent verification.*
 
 ---
 
-## 6. Guardrail and Compliance Node (`src/vay/graph/nodes/utils.py`)
+## 6. Bounded Tool-Calling Loop & Optimizations
 
-Before a draft reply is approved for voice synthesis, `guardrail_node` inspects the state:
-- **Retrieval Confidence Gate**: Verifies `retrieval_score >= min_similarity` (default 0.30), routing low-confidence answers to `human_handoff_node`.
-- **PII Leakage Scan**: Prevents credential, OTP, or token leakage via `PII_LEAK_PATTERNS`.
-- **Grounded Uncertainty Check**: Evaluates `UNCERTAINTY_PATTERNS` only when retrieval confidence is below 0.50 (distinguishing appropriate caveating from ignorance).
-- **Compliance Policy KB Query**: Queries `compliance_policy` for mandated consent language on sensitive operations (`compliance_policy_search`).
-- **Customer Escalation Request**: Checks if the user's transcript explicitly requested a live representative (`HUMAN_REQUEST_PATTERNS`).
+**Primary Code Reference:** [`src/vay/graph/tool_agent.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py)
 
-For a complete breakdown of all 4 guardrail layers (Input PII scans, Identity mismatch verification, Two-phase consent, and Audit logging), see [Compliance, Multi-Layer Guardrails & Human Handoff](guardrails_and_handoff.md).
+The [`run_tool_agent()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L119) function executes tools iteratively up to `MAX_TOOL_ITERATIONS = 4` to `6`:
+
+```python
+# Code snippet from src/vay/graph/tool_agent.py
+def _is_near_duplicate_query(tool_name: str, args: dict, seen_queries: dict) -> bool:
+    new_query = args.get("query")
+    if not isinstance(new_query, str):
+        return False
+    new_tokens = set(re.findall(r"\w+", new_query.lower()))
+    for prev_query in seen_queries.get(tool_name, []):
+        prev_tokens = set(re.findall(r"\w+", prev_query.lower()))
+        jaccard = len(new_tokens & prev_tokens) / len(new_tokens | prev_tokens)
+        if jaccard >= 0.50:
+            return True # Duplicate detected
+    return False
+```
+
+### Safety and Latency Optimizations:
+1. **Near-Duplicate Query Guard**: Computes Jaccard token overlap (threshold 0.50) on repeated tool search queries to block runaway search loops.
+2. **STOP_AND_SAY Sentinel Bypass**: Detects `STOP_AND_SAY:` prefixes returned by sensitive tools and returns the text verbatim, bypassing LLM paraphrasing.
+3. **Anti-Repetition Detox ([`_detoxify_repetition`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L32))**: Prevents generative models (`openai/gpt-oss-20b`) from looping repeated phrases when translating numerical data to Indic languages.
+4. **Sentence Fragment Guard ([`_is_complete_reply`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L65))**: Ensures responses do not end with dangling commas or incomplete clauses.
+
+---
+
+## 7. Guardrail Node Verification
+
+**Primary Code Reference:** [`src/vay/graph/nodes/utils.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L52-L130)
+
+The [`guardrail_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L52) executes Layer 3 checks before synthesis:
+- **Retrieval Confidence Gate**: `retrieval_score < min_similarity` (0.30) -> `human_handoff_node`.
+- **Grounded Uncertainty**: `UNCERTAINTY_PATTERNS` match AND `retrieval_score < 0.50` -> `human_handoff_node`.
+- **Output PII Check**: `PII_LEAK_PATTERNS` -> `human_handoff_node`.
+- **Compliance Policy Scan**: `compliance_policy_search()` for sensitive keywords.
+
+For complete multi-layer guardrail documentation, see [Compliance, Multi-Layer Guardrails & Human Handoff](guardrails_and_handoff.md).

@@ -1,12 +1,14 @@
 # Evaluation, Benchmarks & Quality Audit
 
-This document compiles the quantitative evaluation metrics, latency benchmarks, and systematic defect resolution history across the VAY voice assistant stack.
+This document is a technical study and reference guide for the evaluation metrics, latency benchmarks, and systematic defect resolution history across the VAY voice assistant stack.
 
 ---
 
 ## 1. Automatic Speech Recognition (ASR) Benchmark
 
-VAY evaluates speech transcription performance across 200 validation samples per language using the Mozilla Common Voice benchmark dataset.
+**Primary Data Reference:** [`asr_comparison_results.csv`](file:///home/vishvaa/Projects/VAY-multilingual-agent/asr_comparison_results.csv)
+
+Speech recognition performance was benchmarked across 200 validation audio samples per language from the Mozilla Common Voice dataset.
 
 ### 1.1 Comparative Results Table
 
@@ -29,19 +31,21 @@ VAY evaluates speech transcription performance across 200 validation samples per
 
 Measured across typical multi-sentence customer interactions:
 
-| Pipeline Stage | Implementation | Latency (P50) | Latency (P90) | Optimization Applied |
+| Pipeline Stage | Module Reference | Latency (P50) | Latency (P90) | Optimization Applied |
 |---|---|---|---|---|
-| **VAD Segmentation** | Silero VAD Streamer | ~650 ms | ~700 ms | Tail silence thresholding |
-| **ASR Inference (Tier 1)** | IndicConformer CTC | ~1.10 s | ~1.65 s | Local PyTorch execution |
-| **ASR Inference (Tier 2)** | Whisper Large v3 Turbo | ~320 ms | ~600 ms | Single-pass `transcribe_auto` |
-| **Orchestration & NLU** | Groq `llama-3.1-8b-instant` | ~280 ms | ~450 ms | Strict JSON output format |
-| **Sub-Agent Tool Loop** | Tool Invocation + Groq LLM | ~450 ms | ~850 ms | Jaccard duplicate query filter |
-| **RAG Retrieval** | BM25 + ChromaDB Cosine | ~35 ms | ~65 ms | In-memory BM25 index caching |
-| **TTS Time-to-First-Audio** | Edge-TTS Pipelining | **~1.08 s** | **~1.35 s** | Sentence-level pre-buffering |
+| **VAD Segmentation** | [`src/vay/audio/vad.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/vad.py) | ~650 ms | ~700 ms | 700ms silence thresholding |
+| **ASR Inference (Tier 1)** | [`src/vay/asr/indic.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/indic.py) | ~1.10 s | ~1.65 s | PyTorch `AutoModel` RNN-T decoding |
+| **ASR Inference (Tier 2)** | [`src/vay/asr/whisper.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/whisper.py) | ~320 ms | ~600 ms | Single-pass `transcribe_auto` |
+| **Orchestration & NLU** | [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py) | ~280 ms | ~450 ms | Groq `openai/gpt-oss-20b` (low reasoning effort) |
+| **Sub-Agent Tool Loop** | [`src/vay/graph/tool_agent.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py) | ~450 ms | ~850 ms | Jaccard duplicate query filter |
+| **RAG Retrieval** | [`src/vay/rag/hybrid.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/hybrid.py) | ~35 ms | ~65 ms | In-memory BM25 index caching |
+| **TTS Time-to-First-Audio** | [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py) | **~1.08 s** | **~1.35 s** | Sentence-level pre-buffering |
 
 ---
 
 ## 3. RAG Retrieval Precision Before and After Hybrid BM25
+
+**Primary Code Reference:** [`src/vay/rag/hybrid.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/hybrid.py)
 
 Prior to implementing hybrid search, pure dense vector retrieval with `all-MiniLM-L6-v2` failed on exact numerical queries:
 
@@ -53,18 +57,30 @@ Prior to implementing hybrid search, pure dense vector retrieval with `all-MiniL
 
 ---
 
-## 4. Defect Audit Log & Resolution Summary
+## 4. Systematic Defect Resolution History
 
 During development and systematic stress testing, the following critical defects were identified and resolved:
 
-| Defect Class | Root Cause | Impact | Resolution |
+| Defect Class | Root Cause & File Reference | Impact | Resolution |
 |---|---|---|---|
-| **ASR Language Lock** | Persistent `locked_language` variable in router | Second utterance forced previous language permanently | Per-utterance state reset inside `try/finally` |
-| **Double ASR API Calls** | Separate LID pass + transcription call | Doubled turn latency on English (~1.8s) | Switched to `transcribe_auto()` single-pass |
-| **Speaker Echo Hallucination** | Mic listening while TTS played speaker output | Ghost utterances like `"."` injected into graph | Implemented `mute()`/`unmute()` lifecycle |
-| **Missing Import in Complaints** | `createComplaint` referenced undeclared `SLA_DAYS` | Crashed whenever a customer filed a complaint | Imported `SLA_DAYS` from `session.py` |
-| **Missing Import in Billing** | `getBalance` referenced undeclared `_row_to_dict` | Crashed on all balance checks | Imported `_row_to_dict` from `session.py` |
-| **Tool Search Looping** | LLM generating minor search variations in tool loop | Turn latency spiked to 118s (4 roundtrips) | Added `_is_near_duplicate_query()` Jaccard guard |
-| **Tamil Fragment Generation** | LLM repetition detox returning partial phrases | Spoke incomplete sentence ending in comma | Added `_is_complete_reply()` terminal validator |
-| **Unicode TTS Misalignment** | English voice reading Tamil Unicode codepoints | Spoke number sequences instead of Tamil words | Added `_detect_script()` Unicode router |
-| **TTS Playback Delay** | Full-paragraph synthesis before audio start | Caller waited ~2.5s for audio playback | Added sentence chunking and pipelined streaming |
+| **ASR Language Lock** | Persistent `locked_language` in [`src/vay/asr/router.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/router.py) | Second utterance forced previous language permanently | Per-utterance state reset inside `try/finally` |
+| **Double ASR API Calls** | Separate LID pass + transcription call in [`src/vay/asr/whisper.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/whisper.py) | Doubled turn latency on English (~1.8s) | Switched to `transcribe_auto()` single-pass |
+| **Speaker Echo Feedback** | Mic listening while TTS played speaker output in [`src/vay/audio/pipeline.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/pipeline.py) | Ghost utterances like `"."` injected into graph | Implemented `mute()`/`unmute()` & Barge-In hooks |
+| **Missing Import in Complaints** | `createComplaint` in [`src/vay/tools/complaints.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/complaints.py) referenced undeclared `SLA_DAYS` | Crashed whenever a customer filed a complaint | Imported `SLA_DAYS` from `session.py` |
+| **Missing Import in Billing** | `getBalance` in [`src/vay/tools/billing.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/billing.py) referenced undeclared `_row_to_dict` | Crashed on all balance checks | Imported `_row_to_dict` from `session.py` |
+| **Tool Search Looping** | LLM generating minor search variations in [`src/vay/graph/tool_agent.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py) | Turn latency spiked to 118s (4 roundtrips) | Added `_is_near_duplicate_query()` Jaccard guard |
+| **Tamil Fragment Generation** | LLM repetition detox returning partial phrases in [`src/vay/graph/tool_agent.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py) | Spoke incomplete sentence ending in comma | Added `_is_complete_reply()` terminal validator |
+| **Unicode TTS Misalignment** | English voice reading Tamil Unicode codepoints in [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py) | Spoke number sequences instead of Tamil words | Added `_detect_script()` Unicode router |
+| **TTS Playback Delay** | Full-paragraph synthesis before audio start in [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py) | Caller waited ~2.5s for audio playback | Added sentence chunking and pipelined streaming |
+
+---
+
+## 5. Automated Regression Test Suite
+
+**Primary Code References:** [`tests/`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/)
+
+- [`tests/test_types.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/test_types.py): Validates Pydantic schema instantiations.
+- [`tests/test_routing.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/test_routing.py): Verifies IndicConformer routing for Tamil/Hindi and Whisper routing for English.
+- [`tests/test_rag.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/test_rag.py): Tests HybridRetriever index initialization and scoring.
+- [`tests/test_tools_smoke.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/test_tools_smoke.py): Executes smoke tests across all SQLite tools.
+- [`tests/test_tts_chunking.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/tests/test_tts_chunking.py): Validates multi-language sentence boundary chunking.

@@ -1,12 +1,12 @@
 # Speech-to-Text (STT) and ASR Pipeline
 
-This document provides a comprehensive technical breakdown of the Speech-to-Text (STT), Automatic Speech Recognition (ASR), Voice Activity Detection (VAD), and real-time Barge-In (Interruption Handling) architecture implemented in VAY.
+This document is a technical study and reference guide for the Speech-to-Text (STT), Automatic Speech Recognition (ASR), Voice Activity Detection (VAD), and real-time Barge-In (Interruption Handling) subsystems in VAY.
 
 ---
 
-## 1. Architecture Flowchart
+## 1. Subsystem Architecture
 
-The diagram below reflects the exact data and control flow across `src/vay/audio/vad.py`, `src/vay/audio/pipeline.py`, `src/vay/asr/router.py`, `src/vay/asr/indic.py`, `src/vay/asr/whisper.py`, and `scripts/run_voice.py`.
+The voice intake pipeline coordinates real-time microphone capture, voice activity boundary detection, early speech interruption (barge-in), and dual-tier ASR transcription.
 
 ```mermaid
 flowchart TD
@@ -68,88 +68,164 @@ flowchart TD
 
 ## 2. Voice Activity Detection (VAD) & Real-Time Barge-In
 
-The VAD subsystem isolates speech utterances and dispatches low-latency interruption signals.
+### 2.1 Implementation Details
+**Primary Code Reference:** [`src/vay/audio/vad.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/vad.py)
 
-### 2.1 Implementation Details (`src/vay/audio/vad.py`)
-- **Model**: `snakers4/silero-vad` loaded via `torch.hub.load` and maintained in evaluation mode (`self.model.eval()`).
-- **Audio Specification**: 16,000 Hz, 1-channel mono, 32-bit floating point PCM (`sounddevice.InputStream`).
-- **Frame Processing**: Evaluates non-overlapping chunks of 512 samples (~32 ms per step).
-- **Pre-Speech Buffer**: A 300 ms circular ring buffer (`self.ring_buffer`) preserves the initial vocal onset frames before the VAD threshold is crossed.
-- **Utterance Boundary**: An active utterance completes when speech probability remains below `threshold` (0.50) for `min_silence_duration_ms` (700 ms).
-- **GRU State Reset**: `self.model.reset_states()` is explicitly invoked after every utterance to prevent recurrent hidden states from accumulating drift across turns.
+The [`SileroVADStreamer`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/vad.py#L12-L126) class reads continuous audio from the microphone and yields complete speech segments.
 
-### 2.2 Barge-In Interruption Mechanics
-- **Early Speech Hook (`on_speech_start`)**: Triggered immediately when `speech_prob > threshold` during the waiting state (before waiting for the 700 ms trailing silence).
-- **Armed Window (`begin_tts()` / `end_tts()`)**: The `STTPipeline` sets `self.tts_active = True` during assistant speech synthesis and playback.
-- **Interruption Signal**: If speech starts while `tts_active` is set and `barge_in_enabled` is True:
-  1. `_barge_in_fired` is set to ensure the callback runs at most once per turn.
-  2. `self.on_barge_in()` is invoked from the VAD producer thread.
-  3. The callback sets the `stop_event` on the running TTS thread, stopping the non-blocking `playsound3` audio playback process within ~50 ms.
-- **Acoustic Fallback**: For speaker-only setups without headsets or hardware Acoustic Echo Cancellation (AEC), passing `--no_barge_in` enables the hard `mute()`/`unmute()` path with a 400 ms room-settling delay to prevent speaker echo feedback.
+```python
+# Code snippet from src/vay/audio/vad.py
+class SileroVADStreamer:
+    def __init__(
+        self,
+        sample_rate: int = 16000,
+        chunk_size: int = 512,
+        threshold: float = 0.5,
+        min_silence_duration_ms: int = 700,
+        pre_speech_buffer_ms: int = 300,
+        on_speech_start: "Callable[[], None] | None" = None,
+    ) -> None:
+        self.model, _ = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            force_reload=False
+        )
+        self.model.eval()
+```
+
+- **Audio Specs**: 16,000 Hz, 1-channel mono, 32-bit floating point PCM via `sounddevice.InputStream`.
+- **Chunk Evaluation**: Evaluates non-overlapping chunks of 512 samples (~32 ms at 16 kHz).
+- **Pre-Speech Buffer**: A 300 ms circular ring buffer preserves vocal onset frames preceding the threshold trigger.
+- **Utterance Boundary Detection**: An active utterance completes when speech probability remains below `threshold = 0.50` for `min_silence_duration_ms = 700 ms`.
+- **GRU State Reset**: Calls `self.model.reset_states()` after every utterance to prevent recurrent hidden-state drift across conversational turns.
+
+### 2.2 Real-Time Barge-In Mechanics
+**Primary Code Reference:** [`src/vay/audio/pipeline.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/pipeline.py#L109-L142)
+
+```python
+# Code snippet from src/vay/audio/pipeline.py
+def _on_speech_start(self) -> None:
+    if not (self.barge_in_enabled and self.tts_active.is_set()):
+        return
+    if self._barge_in_fired.is_set():
+        return
+    self._barge_in_fired.set()
+    print("[Pipeline] Barge-in: speech detected during TTS playback — interrupting.")
+    if self.on_barge_in is not None:
+        self.on_barge_in()
+```
+
+- **Early Vocal Trigger**: `on_speech_start` fires immediately when `speech_prob > 0.50` without waiting for trailing silence.
+- **Armed Window**: `begin_tts()` sets `tts_active = True` during TTS synthesis and playback; `end_tts()` clears it.
+- **Playback Interruption**: When speech begins during playback, `on_barge_in()` sets the `stop_event` on the running TTS thread, terminating the `playsound3` audio playback process within ~50 ms.
+- **Acoustic Fallback**: For speaker setups without headsets, pass `--no_barge_in` in [`scripts/run_voice.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/scripts/run_voice.py) to enable hard `mute()`/`unmute()` with 400 ms room-settling delay.
 
 ---
 
-## 3. Producer-Consumer Pipeline Architecture (`src/vay/audio/pipeline.py`)
+## 3. Producer-Consumer Pipeline Execution
 
-`STTPipeline` manages the asynchronous handoff between the audio capture loop and transcription worker:
+**Primary Code Reference:** [`src/vay/audio/pipeline.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/pipeline.py#L41-L267)
 
-1. **Producer Loop (Main Thread)**: Reads chunks from `SileroVADStreamer.stream()` and enqueues completed utterance arrays into `self.utterance_queue`.
-2. **Consumer Loop (`_consumer_loop` Background Thread)**:
-   - **Minimum Length Guard**: Discards any audio buffer with fewer than `_MIN_UTTERANCE_SAMPLES = 8000` samples (< 0.5 s). This filters out microphone clicks, pops, and residual speaker echo.
-   - **Audio Tensor Caching**: Stores `self.last_audio_tensor = torch.from_numpy(utterance)` so downstream error recovery can re-run alternative model passes without re-recording audio.
-   - **ASR Routing**: Passes the audio tensor to `ASRRouter.route_and_transcribe()`.
-   - **Callback Dispatch**: Dispatches the resulting `ASRResult` to `self.callback`.
+The [`STTPipeline`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/pipeline.py#L41) manages asynchronous audio capture and worker transcription:
+
+```python
+# Code snippet from src/vay/audio/pipeline.py
+def _consumer_loop(self) -> None:
+    while self.is_running:
+        utterance = self.utterance_queue.get(timeout=1.0)
+        if len(utterance) < _MIN_UTTERANCE_SAMPLES: # 8,000 samples (~0.5s)
+            continue
+        audio_tensor = torch.from_numpy(utterance)
+        self.last_audio_tensor = audio_tensor
+        result = self.router.route_and_transcribe(audio_tensor)
+        if self.callback is not None:
+            self.callback(result)
+```
+
+- **Noise Filtering (`_MIN_UTTERANCE_SAMPLES = 8000`)**: Discards short noise clicks and echo bleeds before model invocation.
+- **Audio Tensor Caching**: Retains `self.last_audio_tensor` to support downstream model retry passes.
 
 ---
 
-## 4. Dual-Tier ASR Router & Language Identification (`src/vay/asr/router.py`)
+## 4. Dual-Tier ASR Router & Zero-Overhead LID
 
-VAY employs a dual-tier model hierarchy to optimize Indian language accuracy and global language support.
+**Primary Code Reference:** [`src/vay/asr/router.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/router.py)
 
-| Tier | Covered Languages | Engine | Runtime Execution |
+```python
+# Code snippet from src/vay/asr/router.py
+def route_and_transcribe(self, audio_tensor: torch.Tensor, override_language: str | None = None) -> ASRResult:
+    # Step 1: Single-pass transcription & LID via Whisper
+    whisper_result = self.whisper_asr.transcribe_auto(audio_tensor)
+    detected_lang = whisper_result.detected_language
+
+    # Step 2: Route according to language tier
+    if detected_lang in settings.tier1_languages:
+        indic_result = self.indic_asr.transcribe(audio_tensor, language=detected_lang)
+        if not indic_result.raw_text.strip():
+            return whisper_result # Fallback if IndicConformer returns empty
+        return indic_result
+    else:
+        return whisper_result
+```
+
+### 4.1 Language Tier Matrix
+
+| Tier | Supported Languages | Model Identifier | Execution Backend |
 |---|---|---|---|
-| **Tier 1** | 22 Scheduled Indian Languages (`ta`, `hi`, `te`, `kn`, `ml`, `mr`, `gu`, `bn`, `pa`, `or`, `as`, `ur`, `sa`, `sd`, `kok`, `ks`, `doi`, `mai`, `mni`, `ne`, `sat`, `brx`) | `ai4bharat/indic-conformer-600m-multilingual` | Local PyTorch `AutoModel` with RNN-T Decoding |
-| **Tier 2** | English (`en`) + 90 Global Languages | `openai/whisper-large-v3-turbo` | Groq Cloud API (`whisper-large-v3-turbo`) |
-
-### 4.1 Single-Pass Auto-Transcription (`src/vay/asr/whisper.py`)
-- The router invokes `whisper_asr.transcribe_auto(audio_tensor)`.
-- `transcribe_auto()` sends the audio tensor as 16-bit 16kHz WAV bytes to Groq Whisper with `response_format="verbose_json"` and no language hint.
-- Whisper returns both the detected language (`response.language`) and the full transcription text in **one API round-trip**, cutting latency by ~50% compared to a two-step (detect then transcribe) approach.
-
-### 4.2 Language Normalization & Code Mapping
-- `_LANGUAGE_NAME_TO_CODE`: Normalizes full English language names (e.g. `"tamil"` -> `"ta"`, `"hindi"` -> `"hi"`, `"thai"` -> `"th"`).
-- `_GROQ_VALID_LANGUAGE_CODES`: Validates recognized ISO codes to avoid API 400 errors.
-
-### 4.3 Tier 1 Execution & Fallback (`src/vay/asr/indic.py`)
-- If the detected language belongs to `settings.tier1_languages`:
-  1. The router executes `indic_asr.transcribe(audio_tensor, language=detected_lang)`.
-  2. `IndicConformerASR` loads `ai4bharat/indic-conformer-600m-multilingual` via `AutoModel.from_pretrained(..., trust_remote_code=True, token=hf_token)` and executes `self.model(audio_tensor.view(1, -1), language, "rnnt")`.
-  3. If IndicConformer returns an empty string, the router falls back to the Whisper transcript obtained in step 1.
-- If the detected language is Tier 2 (e.g., English), the router returns the Whisper result directly without a second inference pass.
+| **Tier 1** | 22 Scheduled Indian Languages (`ta`, `hi`, `te`, `kn`, `ml`, `mr`, `gu`, `bn`, `pa`, `or`, `as`, `ur`, etc.) | `ai4bharat/indic-conformer-600m-multilingual` | PyTorch `AutoModel` (RNN-T Decoding) |
+| **Tier 2** | English (`en`) + 90 Global Languages | `openai/whisper-large-v3-turbo` | Groq Cloud API (`verbose_json`) |
 
 ---
 
-## 5. Downstream Session Handling & Recovery (`scripts/run_voice.py`)
+## 5. Model Wrappers & Execution Specifics
 
-When `VoiceCallSession.on_asr_result(result)` receives the transcription:
+### 5.1 IndicConformer Wrapper
+**Primary Code Reference:** [`src/vay/asr/indic.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/indic.py)
 
-1. **Noise Transcript Filter**: Evaluates `_NOISE_TRANSCRIPT_RE = r'^[\s.,!?…\-–—\'\"]+$'`. Transcripts consisting solely of punctuation are dropped to prevent spurious chitchat turns.
-2. **Account-Aware Low-Confidence Retry**:
-   - If Whisper detects a Tier-2 language with low confidence (`confidence < 0.50`), but the customer's database profile (`customers.language_pref`) is an Indic Tier-1 language (e.g. Tamil `ta`), the system re-runs `router.route_and_transcribe(last_audio_tensor, override_language=preferred_lang)`.
-   - If IndicConformer yields valid transcribed text, it replaces the low-confidence Whisper output.
-3. **Graph State Injection**: Injects `transcript = result.raw_text` and `language = result.detected_language` into `GraphState` and invokes the LangGraph state machine.
+```python
+# Code snippet from src/vay/asr/indic.py
+from transformers import AutoModel
+
+self.model = AutoModel.from_pretrained(
+    "ai4bharat/indic-conformer-600m-multilingual",
+    trust_remote_code=True,
+    token=os.environ.get("HF_TOKEN")
+)
+output = self.model(audio_tensor.view(1, -1), language, "rnnt")
+```
+
+> [!IMPORTANT]
+> **HuggingFace Pipeline Gotcha**: Do not use `transformers.pipeline()` with IndicConformer because its custom configuration classes fail under generic pipeline factories. Direct `AutoModel` invocation is required.
+
+### 5.2 Whisper Wrapper & Zero-Overhead LID
+**Primary Code Reference:** [`src/vay/asr/whisper.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/whisper.py)
+
+```python
+# Code snippet from src/vay/asr/whisper.py
+response = self.client.audio.transcriptions.create(
+    file=("audio.wav", wav_bytes),
+    model="whisper-large-v3-turbo",
+    response_format="verbose_json", # Returns text + language in one call
+)
+```
+
+- **Single-Pass Auto-Transcription**: `transcribe_auto()` eliminates the separate LID API call, reducing turn latency from ~1.8s to ~0.6s.
+- **Language Normalization (`_normalise_language`)**: Maps 60+ English language names (e.g. `"tamil"`, `"hindi"`) to validated ISO 639-1 tags (`_GROQ_VALID_LANGUAGE_CODES`).
+- **Hallucination Blacklist (`src/vay/asr/hallucinations.py`)**: Filters repeated tokens and known subtitle hallucinations (`"Thank you for watching"`, `"Subtitles by"`).
 
 ---
 
-## 6. Hallucination Filtering (`src/vay/asr/hallucinations.py`)
+## 6. Downstream Voice Session Recovery
 
-`WhisperASR.filter_hallucinations(text, language_code)` applies two deterministic cleaning passes:
-1. **Consecutive Word Deduplication**: Removes stuttered tokens (`"the the"` -> `"the"`).
-2. **Blacklist Matching**: Compares stripped, normalized text against `HALLUCINATION_BLACKLIST` containing known subtitle and silence artifacts (such as `"Thank you for watching"`, `"Subtitles by"`, or `"Amara.org"`). If matched, the text is suppressed to an empty string.
+**Primary Code Reference:** [`scripts/run_voice.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/scripts/run_voice.py)
+
+1. **Noise Transcript Filter**: Evaluates `_NOISE_TRANSCRIPT_RE = r'^[\s.,!?…\-–—\'\"]+$'` to drop pure punctuation transcripts.
+2. **Account-Aware Low-Confidence Fallback**:
+   If Whisper detects a Tier-2 language with confidence < 0.50, but the customer profile ([`SessionContext.preferred_language`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/session.py)) is an Indic Tier-1 language, the router re-runs `router.route_and_transcribe(last_audio_tensor, override_language=pref_lang)` through IndicConformer.
 
 ---
 
-## 7. Measured Benchmark Results
+## 7. Performance & Accuracy Benchmarks
 
 Evaluated on 200 Mozilla Common Voice test samples per language:
 
@@ -160,5 +236,5 @@ Evaluated on 200 Mozilla Common Voice test samples per language:
 | **English** | 200 | **3.79%** | **7.09%** | **0.32s** | N/A | N/A | N/A |
 
 ### Empirical Insights:
-- **IndicConformer delivers high accuracy for Indian languages**: **26.06% WER in Tamil** (vs. 62.44% for Whisper) and **12.00% WER in Hindi** (vs. 35.10% for Whisper).
-- **Whisper excels at English and Zero-Overhead LID**: **3.79% WER in English** with fast API inference (0.32s).
+- **IndicConformer Superiority on Indian Languages**: Delivers a **58% relative WER reduction in Tamil** (26.06% vs. 62.44%) and **66% relative WER reduction in Hindi** (12.00% vs. 35.10%).
+- **Whisper Superiority on English**: Fast API inference (0.32s) with 3.79% WER.
