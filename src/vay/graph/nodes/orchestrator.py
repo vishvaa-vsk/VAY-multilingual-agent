@@ -242,14 +242,26 @@ def orchestrator_node(state: GraphState) -> GraphState:
         confidence = 1.0
 
     # --- Sensitive-PII disclosure guardrail (Aadhaar / card / bank-account numbers) ---
-    # See _contains_sensitive_pii's docstring in core_utils.py. Deliberately checked on the
-    # RAW transcript, independent of route/confidence, and NOT gated on `forced_by_pending_
-    # action` -- a customer reading out a card number instead of "yes"/"no" mid-confirmation
-    # still needs pulling off this call, not silently ignored. Reuses the existing
-    # `sensitive -> human_handoff` branch in route_after_orchestrator, so this call never
-    # reaches billing/plans/complaints/coverage: no sub-agent LLM, no RAG search, no tool call
-    # ever sees this turn once this fires.
-    pii_reason = _contains_sensitive_pii(state["transcript"])
+    # See _contains_sensitive_pii's docstring in core_utils.py. Checked on the RAW transcript,
+    # independent of route/confidence, and NOT gated on `forced_by_pending_action` -- a
+    # customer reading out a card number instead of "yes"/"no" mid-confirmation still needs
+    # pulling off this call, not silently ignored. Reuses the existing `sensitive ->
+    # human_handoff` branch in route_after_orchestrator, so this call never reaches
+    # billing/plans/complaints/coverage: no sub-agent LLM, no RAG search, no tool call ever
+    # sees this turn once this fires.
+    #
+    # ALSO checked on the NLU's normalized_query and stringified entities, not just the raw
+    # transcript -- a customer can read out a card number as spoken word-digits in a non-Latin
+    # script (e.g. Tamil "ஒன் டூ த்ரீ..." for "one two three...") which contains neither a
+    # Latin-script "card number" keyword nor an actual digit run, so the raw-transcript check
+    # alone misses it. The orchestrator LLM still faithfully translates/extracts it into
+    # normalized_query ("... my debit card number ...") and entities ({"card_number": "1234
+    # ..."}), so scanning those too catches what the free-text transcript check can't.
+    pii_reason = (
+        _contains_sensitive_pii(state["transcript"])
+        or _contains_sensitive_pii(str(parsed.get("normalized_query", "")))
+        or _contains_sensitive_pii(json.dumps(parsed.get("entities") or {}))
+    )
     if pii_reason:
         sensitive = True
         print(f"  [Orchestrator] PII disclosure guardrail: {pii_reason} -- forcing human_handoff.")

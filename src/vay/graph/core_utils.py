@@ -235,6 +235,37 @@ def _redact_pii(text: str) -> str:
     return _DIGIT_RUN_PATTERN.sub(_mask, text)
 
 
+# Entity keys whose VALUE is redacted outright in any handoff-log write, regardless of which
+# guardrail (if any) triggered the handoff. This is a separate, narrower net from
+# _contains_sensitive_pii/_redact_pii above: those work off free text (the raw transcript);
+# this one works off the orchestrator NLU's *structured* entities dict, which can carry a
+# card/account number the LLM pulled out of the customer's own words (spoken as number-words,
+# or in a non-Latin script) even when neither free-text signal fired -- e.g. a customer
+# spelling out a card number as Tamil word-for-word digits ("ஒன் டூ த்ரீ..." / "one two
+# three...") never matches a Latin-script keyword or an actual digit run in the transcript,
+# but the NLU still faithfully extracts entities={"card_number": "1234..."}. Applied
+# unconditionally in human_handoff_node/identity_mismatch_node -- never gated on `reason` --
+# because the sub-agent/tool-loop can degrade to handoff for reasons unrelated to PII (rate
+# limits, tool-call errors, ...) while the turn's entities still carry sensitive data.
+_SENSITIVE_ENTITY_KEYS = re.compile(
+    r"(card[_ ]?number|cvv|expiry|ifsc|account[_ ]?number|aadhaar|aadhar|pan[_ ]?number|"
+    r"bank[_ ]?account)",
+    re.IGNORECASE,
+)
+
+
+def _redact_entities(entities: dict | None) -> dict | None:
+    """Return a copy of *entities* with any sensitive-looking key's value replaced by
+    "[REDACTED]". See _SENSITIVE_ENTITY_KEYS docstring above for why this exists as a
+    separate, unconditional pass rather than relying on the free-text PII guardrail alone."""
+    if not entities:
+        return entities
+    return {
+        k: ("[REDACTED]" if _SENSITIVE_ENTITY_KEYS.search(str(k)) else v)
+        for k, v in entities.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Identity-mismatch guardrail templates.
 # tools/session.py's SessionContext.phone_number is the ONE number bound to this call

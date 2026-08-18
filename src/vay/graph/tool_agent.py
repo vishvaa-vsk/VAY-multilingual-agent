@@ -245,8 +245,9 @@ TOOL_LOOP_FAILURE_TEMPLATES = {
 # and the customer's own turn was correctly detected in that language. Nothing previously
 # checked the OUTPUT actually landed in the right script before it went to TTS. This is a
 # deterministic, code-level backstop: for languages with a distinct Unicode script, verify
-# the reply actually contains at least one character from that script; if not, force one
-# translation-only retry (no tools, no rephrasing of content) before returning.
+# a sufficient share of the reply's letters actually fall in that script (a lone
+# transliterated loanword, e.g. "rupee" in an otherwise-English reply, doesn't count); if
+# not, force one translation-only retry (no tools, no rephrasing of content) before returning.
 _SCRIPT_RANGES: dict[str, tuple[int, int]] = {
     "hi": (0x0900, 0x097F),  # Devanagari (Hindi)
     "mr": (0x0900, 0x097F),  # Devanagari (Marathi)
@@ -290,15 +291,27 @@ _LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
+_SCRIPT_CONFORMANCE_MIN_RATIO = 0.4
+
+
 def _script_conforms(text: str, language: str) -> bool:
-    """True if *text* contains at least one character in *language*'s script, or if
-    *language* has no script mapping here (e.g. "en", or a Latin-script language not
-    listed -- nothing to check, assume compliant)."""
+    """True if at least _SCRIPT_CONFORMANCE_MIN_RATIO of *text*'s alphabetic characters
+    fall in *language*'s script, or if *language* has no script mapping here (e.g. "en",
+    or a Latin-script language not listed -- nothing to check, assume compliant).
+
+    A single in-script loanword (e.g. a transliterated currency name inside an otherwise
+    English reply) is not enough to count as conforming -- ratio, not presence, is what
+    matters here. Code-switched technical terms (APN, data plan, ...) are expected and
+    tolerated as long as they stay a minority of the letters."""
     rng = _SCRIPT_RANGES.get(language)
     if not rng or not text:
         return True
     lo, hi = rng
-    return any(lo <= ord(ch) <= hi for ch in text)
+    alpha_chars = [ch for ch in text if ch.isalpha()]
+    if not alpha_chars:
+        return True
+    script_count = sum(1 for ch in alpha_chars if lo <= ord(ch) <= hi)
+    return (script_count / len(alpha_chars)) >= _SCRIPT_CONFORMANCE_MIN_RATIO
 
 
 def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = False) -> str:

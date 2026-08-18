@@ -38,6 +38,7 @@ from vay.graph.utils import (
     PII_LEAK_PATTERNS,
     UNCERTAINTY_PATTERNS,
     _llm,
+    _redact_entities,
     _redact_pii,
     localized,
     log_handoff,
@@ -147,12 +148,19 @@ def human_handoff_node(state: GraphState) -> GraphState:
     # "PII disclosure:" prefix orchestrator_node sets for this case.
     if reason.startswith("PII disclosure:"):
         transcript = _redact_pii(transcript)
+    # entities is redacted unconditionally (not gated on `reason`) -- a card/account number
+    # can end up in state["entities"] via the orchestrator NLU's structured extraction even
+    # when the handoff was triggered by something unrelated (a tool-loop failure, a rate
+    # limit, ...), and even when the free-text PII guardrail above never fired on this turn's
+    # transcript (e.g. the customer spelled the number out as word-digits in a non-Latin
+    # script, which matches neither a Latin keyword nor a literal digit run). See
+    # _redact_entities's docstring in core_utils.py.
     log_handoff(
         {
             "phone_number": state["phone_number"],
             "transcript": transcript,
             "intent": state.get("intent"),
-            "entities": state.get("entities"),
+            "entities": _redact_entities(state.get("entities")),
             "normalized_query": state.get("normalized_query"),
             "route": state.get("route"),
             "reason": reason,
@@ -181,7 +189,7 @@ def identity_mismatch_node(state: GraphState) -> GraphState:
             "phone_number": state["phone_number"],
             "transcript": state["transcript"],
             "intent": state.get("intent"),
-            "entities": state.get("entities"),
+            "entities": _redact_entities(state.get("entities")),
             "normalized_query": state.get("normalized_query"),
             "route": state.get("route"),
             "reason": "Identity mismatch: entities.phone_number differs from verified session number.",
