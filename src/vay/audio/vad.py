@@ -2,7 +2,7 @@
 
 import queue
 import time
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 
 import numpy as np
 import sounddevice as sd
@@ -19,13 +19,19 @@ class SileroVADStreamer:
         threshold: float = 0.5,
         min_silence_duration_ms: int = 700,
         pre_speech_buffer_ms: int = 300,
+        on_speech_start: "Callable[[], None] | None" = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.threshold = threshold
         self.min_silence_duration_ms = min_silence_duration_ms
         self.pre_speech_buffer_ms = pre_speech_buffer_ms
-        
+        # Fired the instant speech crosses the VAD threshold — i.e. *before*
+        # the full utterance (and its trailing silence) has been captured.
+        # Used for barge-in: the caller needs to know "user started talking"
+        # immediately, not ~700ms+ later when the utterance finally yields.
+        self.on_speech_start = on_speech_start
+
         # Load the model
         print("Loading Silero VAD model...")
         self.model, _ = torch.hub.load(
@@ -86,6 +92,11 @@ class SileroVADStreamer:
                         self.is_speaking = True
                         self.current_utterance = self.ring_buffer.copy()
                         self.ring_buffer.clear()
+                        if self.on_speech_start is not None:
+                            try:
+                                self.on_speech_start()
+                            except Exception as e:
+                                print(f"[VAD] on_speech_start callback error: {e}")
                 else:
                     # RECORDING STATE
                     self.current_utterance.append(chunk)

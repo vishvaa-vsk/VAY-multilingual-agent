@@ -152,6 +152,22 @@ class GraphState(TypedDict, total=False):
     # short-circuit the sub-agent path when appropriate.
     warning_reply: str
 
+    # Set by orchestrator_node when this utterance names a phone_number entity that differs
+    # from the call's verified session.phone_number (e.g. "change the plan for my friend's
+    # number..."). Non-empty means route_after_orchestrator sends the call straight to the
+    # identity_mismatch node's fixed refusal instead of a sub-agent -- see the guardrail
+    # comment in orchestrator_node for why this can't be left to the sub-agent LLM.
+    identity_mismatch_reply: str
+
+    # Optional threading.Event, set by the caller (run_voice.py) before
+    # graph.invoke() for this turn. tts_node passes it through to
+    # tts.speak(stop_event=...) so a caller barge-in (detected on the audio
+    # pipeline's producer thread while this turn's TTS is playing) cuts
+    # playback short instead of running to completion. None outside the
+    # real-time voice entry point (e.g. Streamlit UI) — barge-in is a no-op
+    # there.
+    barge_in_event: Any
+
 
 AgentState = GraphState
 
