@@ -20,6 +20,8 @@ import asyncio
 import os
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 try:
@@ -111,11 +113,30 @@ async def _synthesize_chunk(text: str, voice: str) -> str:
     return tmp_path
 
 
-def _play_file(path: str) -> None:
-    """Blocking playback of a single audio file. Logs and swallows errors."""
+# How often to poll a non-blocking playsound3 Sound for stop_event / liveness
+# during barge-in-interruptible playback.
+_BARGE_IN_POLL_S = 0.05
+
+
+def _play_file(path: str, stop_event: "threading.Event | None" = None) -> None:
+    """Blocking playback of a single audio file. Logs and swallows errors.
+
+    If *stop_event* is given, playback is polled in the background and cut
+    short (process killed) the moment the event is set — this is what lets a
+    caller barge in over the assistant mid-sentence instead of waiting for
+    the whole reply to finish playing.
+    """
     try:
         from playsound3 import playsound  # type: ignore[import]
-        playsound(path)
+        if stop_event is None:
+            playsound(path)
+        else:
+            sound = playsound(path, block=False)
+            while sound.is_alive():
+                if stop_event.is_set():
+                    sound.stop()
+                    break
+                time.sleep(_BARGE_IN_POLL_S)
     except Exception as e:
         print(f"  [TTS playback error (continuing without audio): {e}]")
     finally:
@@ -145,7 +166,9 @@ def _run_async(coro) -> None:
         print(f"  [TTS error: {e}]")
 
 
-async def _speak_pipelined(chunks: list[str], voice: str) -> None:
+async def _speak_pipelined(
+    chunks: list[str], voice: str, stop_event: "threading.Event | None" = None
+) -> None:
     """Synthesize and play *chunks* in order, overlapping synthesis of the
     next chunk with playback of the current one.
 
@@ -153,12 +176,26 @@ async def _speak_pipelined(chunks: list[str], voice: str) -> None:
     every subsequent chunk is already being synthesized in the background
     while the previous one plays, instead of the whole reply having to
     finish synthesizing before any audio starts.
+
+    If *stop_event* becomes set (barge-in), playback of the current chunk is
+    cut short and no further chunks are synthesized or played.
     """
     loop = asyncio.get_running_loop()
 
     next_chunk_task = asyncio.ensure_future(_synthesize_chunk(chunks[0], voice))
     for i in range(len(chunks)):
+        if stop_event is not None and stop_event.is_set():
+            next_chunk_task.cancel()
+            break
+
         current_path = await next_chunk_task
+
+        if stop_event is not None and stop_event.is_set():
+            try:
+                os.remove(current_path)
+            except OSError:
+                pass
+            break
 
         # Kick off synthesis of the following chunk (if any) before we start
         # blocking on playback of the current one, so it runs concurrently.
@@ -167,7 +204,10 @@ async def _speak_pipelined(chunks: list[str], voice: str) -> None:
                 _synthesize_chunk(chunks[i + 1], voice)
             )
 
-        await loop.run_in_executor(None, _play_file, current_path)
+        await loop.run_in_executor(None, _play_file, current_path, stop_event)
+
+        if stop_event is not None and stop_event.is_set():
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +220,7 @@ def speak(
     language: str | None = None,
     output_path: str | None = None,
     play: bool = True,
+    stop_event: "threading.Event | None" = None,
     **kwargs,
 ) -> str:
     """Synthesize *text* in the neural voice for *lang* and optionally play it.
@@ -192,6 +233,10 @@ def speak(
         output_path: Where to write the MP3.  If ``None`` a temp file is used
                      and deleted after playback.
         play:        Whether to play the audio immediately after synthesis.
+        stop_event:  Optional ``threading.Event``. If set at any point while
+                     this reply is playing, playback stops immediately —
+                     used for barge-in (the caller starts talking over the
+                     assistant). See ``vay.audio.pipeline.STTPipeline``.
 
     Returns:
         The path to the MP3 file (may already be deleted if *play* was True
@@ -242,7 +287,7 @@ def speak(
     # waiting for the whole reply to finish synthesizing first.
     if play and output_path is None:
         chunks = _split_into_speech_chunks(speech_text)
-        _run_async(_speak_pipelined(chunks, voice))
+        _run_async(_speak_pipelined(chunks, voice, stop_event))
         return ""
 
     # --- Single-file path: explicit output_path given, and/or play=False
@@ -274,7 +319,15 @@ def speak(
     if play:
         try:
             from playsound3 import playsound  # type: ignore[import]
-            playsound(output_path)
+            if stop_event is None:
+                playsound(output_path)
+            else:
+                sound = playsound(output_path, block=False)
+                while sound.is_alive():
+                    if stop_event.is_set():
+                        sound.stop()
+                        break
+                    time.sleep(_BARGE_IN_POLL_S)
         except Exception as e:
             print(f"  [TTS playback error (continuing without audio): {e}]")
         finally:

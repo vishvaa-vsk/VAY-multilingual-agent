@@ -11,17 +11,26 @@ Pipeline flow
                 ├─ Indic language → IndicConformer (Tier 1)
                 └─ Other language → Whisper (Tier 2)
                       └─► ASRResult  { raw_text, detected_language }
-                            └─► [pipeline MUTED — no new captures while TTS plays]
+                            └─► [pipeline.begin_tts() — mic stays live, barge-in armed]
                                   └─► LangGraph  (orchestrator → sub-agent → RAG → TTS)
                                         └─► edge-tts speaks reply in caller's language
-                                              └─► [pipeline UNMUTED + queue drained]
-                                                    └─► loop for next utterance
+                                              ├─ caller talks over it → on_barge_in() fires
+                                              │  instantly, stop_event cuts playback short,
+                                              │  their utterance becomes the next turn
+                                              └─ TTS finishes normally → residual queue drained
+                                  └─► [pipeline.end_tts()] └─► loop for next utterance
+
+Barge-in requires a headset/earbuds for reliable results — there is no
+acoustic echo cancellation, so on a speaker-only setup the assistant's own
+voice can trigger a false interrupt. Pass --no_barge_in to fall back to the
+old behaviour (microphone fully muted while the assistant speaks).
 
 Usage
 -----
     python scripts/run_voice.py
     python scripts/run_voice.py --phone 9876543210 --show_debug
     python scripts/run_voice.py --min_similarity 0.4
+    python scripts/run_voice.py --no_barge_in
 
     # Ctrl+C to end the call at any point.
 
@@ -152,6 +161,22 @@ class VoiceCallSession:
         self.is_active = True
         self._stop_event = threading.Event()
 
+        # Barge-in: the stop_event for the TTS currently playing (if any).
+        # Created fresh per turn in on_asr_result(); on_barge_in() sets it
+        # the instant the pipeline detects the caller talking over the
+        # assistant, which cuts tts.speak() short (see tts_node/tts/engine.py).
+        self._tts_stop_event: threading.Event | None = None
+        pipeline.on_barge_in = self._on_barge_in
+
+    # ------------------------------------------------------------------
+    # Barge-in callback — invoked on the STTPipeline's VAD producer thread
+    # ------------------------------------------------------------------
+
+    def _on_barge_in(self) -> None:
+        """Fired the instant the caller starts talking over the assistant."""
+        if self._tts_stop_event is not None:
+            self._tts_stop_event.set()
+
     # ------------------------------------------------------------------
     # ASR callback — invoked by STTPipeline consumer thread
     # ------------------------------------------------------------------
@@ -231,6 +256,10 @@ class VoiceCallSession:
         self.language = lang
         self.session.language = lang
 
+        # Fresh stop_event for this turn's TTS — on_barge_in() sets it if the
+        # caller starts talking while the assistant is still speaking.
+        self._tts_stop_event = threading.Event()
+
         state: GraphState = {
             "phone_number": self.phone_number,
             "language": lang,
@@ -239,25 +268,48 @@ class VoiceCallSession:
             "show_debug": self.show_debug,
             "min_similarity": self.min_similarity,
             "session": self.session,
+            "barge_in_event": self._tts_stop_event,
         }
 
         # ------------------------------------------------------------------
-        # Mute microphone BEFORE invoking the graph.
-        # TTS playback (edge-tts) happens inside graph.invoke via tts_node.
-        # Without muting, the speaker output is captured by VAD and fed back
-        # as the next user utterance — producing phantom transcripts like ".".
+        # Guard the microphone around TTS playback (edge-tts, inside
+        # graph.invoke via tts_node) so the speaker output isn't fed back in
+        # as the next user utterance.
+        #
+        # With barge-in enabled the mic is NOT muted: begin_tts() arms
+        # barge-in detection instead, so genuine speech from the caller
+        # interrupts tts.speak() (via _tts_stop_event) almost immediately and
+        # that utterance flows straight through as the next query once this
+        # graph.invoke() call returns. Without barge-in (or on a speaker-only
+        # setup with no headset / no AEC) fall back to the old hard mute.
         # ------------------------------------------------------------------
-        self.pipeline.mute()
+        if self.pipeline.barge_in_enabled:
+            self.pipeline.begin_tts()
+        else:
+            self.pipeline.mute()
         try:
             result_state = self.graph.invoke(state)
         except Exception as e:
             print(f"[VoiceCall] LangGraph error: {e}")
             return
         finally:
-            # Brief silence after TTS stops so room echo dies down, then
-            # drain residual captures and re-enable the microphone.
-            time.sleep(_POST_TTS_SILENCE_S)
-            self.pipeline.unmute()
+            barged_in = self._tts_stop_event.is_set()
+            self._tts_stop_event = None
+            if self.pipeline.barge_in_enabled:
+                self.pipeline.end_tts()
+                if not barged_in:
+                    # TTS finished on its own — a residual capture in the
+                    # queue would be leftover echo/noise, not a real query.
+                    # Drain it (unmute() is a no-op on mute state here, but
+                    # still does the draining). If barge-in DID fire, the
+                    # queue instead holds the caller's real interrupting
+                    # utterance — keep it, it becomes the next turn once
+                    # this call returns.
+                    time.sleep(_POST_TTS_SILENCE_S)
+                    self.pipeline.unmute()
+            else:
+                time.sleep(_POST_TTS_SILENCE_S)
+                self.pipeline.unmute()
 
         reply = result_state.get("final_reply") or localized(
             HANDOFF_MESSAGE_TEMPLATES, result_state.get("language", lang)
@@ -329,6 +381,15 @@ def main() -> None:
         action="store_true",
         help="Print orchestrator JSON and tool-call traces.",
     )
+    parser.add_argument(
+        "--no_barge_in",
+        action="store_true",
+        help=(
+            "Disable barge-in: fall back to fully muting the microphone while "
+            "the assistant speaks. Use this on speaker-only setups (no "
+            "headset) where TTS echo could otherwise misfire as barge-in."
+        ),
+    )
     args = parser.parse_args()
 
     if not os.environ.get("GROQ_API_KEY"):
@@ -358,7 +419,7 @@ def main() -> None:
     # ----------------------------------------------------------------
     # Callback is set after session creation (chicken-and-egg); we use
     # a wrapper lambda so the pipeline exists before the session does.
-    pipeline = STTPipeline(callback=None)   # callback wired in step 4
+    pipeline = STTPipeline(callback=None, barge_in=not args.no_barge_in)   # callback wired in step 4
 
     # ----------------------------------------------------------------
     # Step 4: Create voice session (needs the pipeline for mute/unmute)

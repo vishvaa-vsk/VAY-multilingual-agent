@@ -284,9 +284,17 @@ def closing_node(state: GraphState) -> GraphState:
 # ---------------------------------------------------------------------------
 
 def tts_node(state: GraphState) -> GraphState:
-    """Speak the final reply via edge-tts in the caller's detected language."""
+    """Speak the final reply via edge-tts in the caller's detected language.
+
+    ``barge_in_event``, if set on state, is threaded through to
+    tts.speak() — see the field's docstring in graph/state.py.
+    """
     if os.environ.get("STREAMLIT_UI") != "1":
-        tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
+        tts.speak(
+            state.get("final_reply", ""),
+            lang=state.get("language", "en"),
+            stop_event=state.get("barge_in_event"),
+        )
     return {}
 
 

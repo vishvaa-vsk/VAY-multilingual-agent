@@ -159,6 +159,15 @@ class GraphState(TypedDict, total=False):
     # comment in orchestrator_node for why this can't be left to the sub-agent LLM.
     identity_mismatch_reply: str
 
+    # Optional threading.Event, set by the caller (run_voice.py) before
+    # graph.invoke() for this turn. tts_node passes it through to
+    # tts.speak(stop_event=...) so a caller barge-in (detected on the audio
+    # pipeline's producer thread while this turn's TTS is playing) cuts
+    # playback short instead of running to completion. None outside the
+    # real-time voice entry point (e.g. Streamlit UI) — barge-in is a no-op
+    # there.
+    barge_in_event: Any
+
 
 AgentState = GraphState
 
