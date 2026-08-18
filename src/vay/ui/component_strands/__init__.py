@@ -33,6 +33,10 @@ def strands_component(
     glassSize=1.0,
     status="idle",
     audio_data=None,  # Base64-encoded WAV to play back to the user
+    more_chunks_pending=False,  # True while a chunked TTS reply has more
+    # audio queued after audio_data — tells the frontend to hold off
+    # switching to "listening" (and resuming the mic) until the whole
+    # reply has actually finished playing, not just the current chunk.
     key=None
 ):
     """
@@ -64,6 +68,7 @@ def strands_component(
         glassSize=glassSize,
         status=status,
         audio_data=audio_data,
+        more_chunks_pending=more_chunks_pending,
         key=key,
         default=None
     )

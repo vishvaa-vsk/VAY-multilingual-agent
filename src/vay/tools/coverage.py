@@ -59,26 +59,81 @@ DEVICE_SETTINGS = {
 def build_coverage_tools(session: SessionContext) -> list:
     conn = customer_db._connect()
 
-    @tool
-    def checkCoverage(pincode: str) -> str:
-        """Check Nexatel network coverage (signal strength, technology) for a pincode."""
-        row = conn.execute("SELECT * FROM coverage WHERE pincode=?", (pincode,)).fetchone()
-        if not row:
-            return (
-                f"No coverage data on file for pincode {pincode} — treat as unverified/rural area."
+    def _registered_pincode() -> tuple[str, str] | None:
+        """The caller's on-file address pincode/city, if any."""
+        row = conn.execute(
+            "SELECT pincode, city FROM customers WHERE phone_number=?",
+            (session.phone_number,),
+        ).fetchone()
+        if row and row["pincode"]:
+            return row["pincode"], row["city"]
+        return None
+
+    def _resolve_pincode(pincode: str) -> tuple[str | None, str | None]:
+        """Validate/resolve a pincode argument.
+
+        Returns (resolved_pincode, message). `resolved_pincode` is None when the
+        tool should NOT run a lookup yet -- `message` is what to relay to the
+        customer instead (either a request to confirm the on-file pincode, or a
+        rejection of a malformed value).
+        """
+        pincode = (pincode or "").strip()
+
+        if not pincode:
+            reg = _registered_pincode()
+            if reg:
+                reg_pincode, city = reg
+                return None, (
+                    f"No pincode was given. The pincode on file for this account is "
+                    f"{reg_pincode} ({city}). Ask the customer to confirm: should I check that "
+                    f"pincode, or do they want to give a different one (e.g. if they're "
+                    f"reporting an issue at another location)?"
+                )
+            return None, (
+                "No pincode was given and none is on file for this account -- ask the "
+                "customer for the 6-digit pincode of the area to check."
             )
-        return f"{row['area']} ({pincode}): signal={row['signal_strength']}, technology={row['technology']}."
+
+        # Guard against non-pincode values (e.g. a phone number) being passed through --
+        # Indian pincodes are exactly 6 digits.
+        if not (pincode.isdigit() and len(pincode) == 6):
+            return None, (
+                f"'{pincode}' is not a valid 6-digit pincode -- ask the customer for the "
+                f"correct pincode (never reuse their phone number or any other ID as a pincode)."
+            )
+
+        return pincode, None
 
     @tool
-    def getOutageStatus(pincode: str) -> str:
-        """Check whether there is a known network outage in a pincode."""
-        row = conn.execute("SELECT * FROM coverage WHERE pincode=?", (pincode,)).fetchone()
+    def checkCoverage(pincode: str = "") -> str:
+        """Check Nexatel network coverage (signal strength, technology) for a pincode.
+        Leave pincode empty if the customer hasn't stated one -- this will offer the
+        account's on-file pincode for confirmation instead of guessing."""
+        resolved, message = _resolve_pincode(pincode)
+        if resolved is None:
+            return message
+        row = conn.execute("SELECT * FROM coverage WHERE pincode=?", (resolved,)).fetchone()
         if not row:
-            return f"No outage data on file for pincode {pincode}."
+            return (
+                f"No coverage data on file for pincode {resolved} — treat as unverified/rural area."
+            )
+        return f"{row['area']} ({resolved}): signal={row['signal_strength']}, technology={row['technology']}."
+
+    @tool
+    def getOutageStatus(pincode: str = "") -> str:
+        """Check whether there is a known network outage in a pincode.
+        Leave pincode empty if the customer hasn't stated one -- this will offer the
+        account's on-file pincode for confirmation instead of guessing."""
+        resolved, message = _resolve_pincode(pincode)
+        if resolved is None:
+            return message
+        row = conn.execute("SELECT * FROM coverage WHERE pincode=?", (resolved,)).fetchone()
+        if not row:
+            return f"No outage data on file for pincode {resolved}."
         status = row["outage_status"]
         if status == "none":
-            return f"No known outage in {row['area']} ({pincode})."
-        return f"Outage status in {row['area']} ({pincode}): {status}."
+            return f"No known outage in {row['area']} ({resolved})."
+        return f"Outage status in {row['area']} ({resolved}): {status}."
 
     @tool
     def getDeviceSettings(device_type: str) -> str:
