@@ -1,6 +1,6 @@
 # Compliance, Multi-Layer Guardrails & Human Handoff
 
-This document provides a comprehensive technical breakdown of the safety, compliance, identity verification, multi-layer guardrails, and human escalation mechanisms implemented in VAY.
+This document is a technical study and reference guide for the safety policies, identity verification, 4-layer guardrail architecture, and human escalation mechanisms in VAY.
 
 ---
 
@@ -12,7 +12,7 @@ To ensure zero hallucination on sensitive customer accounts, prevent credential 
 flowchart TD
     CustomerUtterance([Customer Utterance / Transcript]) --> L1[Layer 1: Input & NLU Guardrails]
     
-    subgraph L1_Detail ["Layer 1: Input & NLU"]
+    subgraph L1_Detail ["Layer 1: Input & NLU (orchestrator.py, core_utils.py)"]
         PIIScan{Sensitive PII in Transcript?<br/>Aadhaar, Card, Bank Acc} -->|Yes| PIIHandoff[Force Redacted Human Handoff]
         HumanReq{Explicit Human Request?} -->|Yes| DirectHandoff[Route to Human Handoff]
         AbuseScan{Dual-Gate Abuse Detection<br/>LLM + Regex Match} -->|Strike 1: Warning<br/>Strike 2: Call Cut| AbuseAction[Warning / Closing Node]
@@ -21,7 +21,7 @@ flowchart TD
     
     L1 --> L2[Layer 2: Identity & Tool Authorization]
     
-    subgraph L2_Detail ["Layer 2: Identity & Tool Execution"]
+    subgraph L2_Detail ["Layer 2: Identity & Tool Execution (session.py, tools/)"]
         IdentityCheck{Entity Phone == Session Phone?} -->|Mismatch| IdentityRefusal[identity_mismatch_node<br/>Deterministic Refusal]
         ToolAuth{Session Verified?} -->|No| SensitiveDenial[Reject Sensitive Tools]
         TwoPhaseConsent{Sensitive Action Requested?<br/>changePlan / sendPaymentLink} -->|Stage Action| StopAndSay["STOP_AND_SAY Sentinel<br/>(Bypasses LLM paraphrasing)"]
@@ -30,7 +30,7 @@ flowchart TD
     
     L2 --> L3[Layer 3: Output & Retrieval Grounding]
     
-    subgraph L3_Detail ["Layer 3: Output Guardrail Node"]
+    subgraph L3_Detail ["Layer 3: Output Guardrail Node (nodes/utils.py)"]
         RetCheck{Retrieval Score >= min_similarity?} -->|No / Low Conf| HandoffConfidence[Route to Human Handoff]
         UncertaintyCheck{Uncertainty Phrase AND Score < 0.50?} -->|Yes| HandoffUncertainty[Route to Human Handoff]
         OutPIICheck{PII / Token Leak in Draft?} -->|Yes| BlockDraft[Block Draft & Route to Handoff]
@@ -40,7 +40,7 @@ flowchart TD
     
     L3 --> L4[Layer 4: Human Escalation & Audit Queue]
     
-    subgraph L4_Detail ["Layer 4: Escalation & Audit"]
+    subgraph L4_Detail ["Layer 4: Escalation & Audit (nodes/utils.py, core_utils.py)"]
         RedactPII[PII Redaction Engine] --> AppendLog[Append Structured Record to handoff_log.jsonl]
         AppendLog --> SpokenHandoff[Play Localized Handoff Audio]
         SpokenHandoff --> CleanSession[Reset Session Context for Next Caller]
@@ -51,39 +51,55 @@ flowchart TD
 
 ## 2. Layer 1: Input & NLU Guardrails
 
-Input guardrails inspect the raw customer transcript before any domain sub-agent, tool, or database query is executed.
+**Primary Code References:** [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py), [`src/vay/graph/core_utils.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py)
 
-### 2.1 Sensitive PII Disclosure Guardrail (`_contains_sensitive_pii`)
-- **Inspection Target**: Raw transcript string.
-- **Pattern Coverage**:
-  - **Aadhaar Numbers**: 12-digit Indian national identity numbers (`\b\d{4}\s?\d{4}\s?\d{4}\b`).
-  - **Payment Card Numbers**: 13-19 digit Visa, MasterCard, RuPay, and Amex numbers validated against regex and format checks.
-  - **CVV / Security Codes**: 3-4 digit card verification values.
-  - **Bank Account / Passwords**: Raw credential patterns.
-- **Enforcement**: If sensitive PII is spoken by the customer, the orchestrator immediately marks `sensitive = True`, bypassing all domain sub-agents and routing directly to `human_handoff_node`. The raw transcript is redacted prior to escalation logging.
+### 2.1 Sensitive PII Disclosure Guardrail
+The [`_contains_sensitive_pii()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L420) function inspects the raw transcript before routing to sub-agents:
 
-### 2.2 Dual-Gate Abuse & Toxicity Policy
-To protect against false positives from small LLM classifiers while maintaining a safe environment:
-1. **Gate 1**: The orchestrator LLM outputs `"aggressive": true`.
-2. **Gate 2 (Deterministic)**: The raw transcript must match `ABUSIVE_LANGUAGE_PATTERN` (profanity, hostile insults, or harassment terms).
-- **Strike 1 (Warning)**: The assistant issues a polite, firm warning (`warning_node`) asking the customer to maintain professional communication.
-- **Strike 2+ (Call Termination)**: The assistant politely ends the call (`closing_node`) using deterministic `CALL_CUT_TEMPLATES`. Abusive callers are **not** transferred to human agents.
+```python
+# Code snippet from src/vay/graph/core_utils.py
+def _contains_sensitive_pii(text: str) -> str | None:
+    # 1. Aadhaar (12-digit Indian national identity)
+    if re.search(r"\b\d{4}\s?\d{4}\s?\d{4}\b", text):
+        return "PII disclosure: 12-digit Aadhaar number detected in transcript."
+    # 2. Payment Card Numbers (13-19 digits, Visa/MasterCard/RuPay/Amex)
+    for match in re.finditer(r"\b(?:\d[ -]?){13,19}\b", text):
+        digits = re.sub(r"\D", "", match.group(0))
+        if _is_luhn_valid(digits):
+            return "PII disclosure: payment card number detected in transcript."
+    # 3. CVVs, Bank Accounts, Passwords
+    ...
+```
 
-### 2.3 Low-Confidence & Clarification Gate
-- If orchestrator NLU confidence is below `DEFAULT_NLU_CONFIDENCE` (0.40) or the intent is ambiguous:
-  - **Turn 1**: The assistant reprompts the user politely using `clarify_node` (`CLARIFY_TEMPLATES`).
-  - **Turn 2+ (`UNCLEAR_ESCALATION_THRESHOLD = 2`)**: If the caller remains unclear across consecutive turns, the call escalates cleanly to a human representative.
+- **Enforcement**: When sensitive PII is detected, the orchestrator immediately sets `sensitive = True`, forcing `human_handoff_node`.
+- **Redaction**: Transcript PII is redacted via [`_redact_pii()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L460) before logging to `handoff_log.jsonl`.
+
+### 2.2 Dual-Gate Abuse Policy
+```python
+# Code snippet from src/vay/graph/nodes/orchestrator.py
+aggressive = bool(parsed.get("aggressive", False)) and bool(
+    ABUSIVE_LANGUAGE_PATTERN.search(state["transcript"])
+)
+```
+- **Gate 1**: Orchestrator LLM outputs `"aggressive": true`.
+- **Gate 2 (Deterministic)**: Raw transcript matches [`ABUSIVE_LANGUAGE_PATTERN`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L380).
+- **Strike Policy**: Strike 1 issues a polite warning ([`warning_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L197)); Strike 2 cleanly ends the call ([`closing_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L241)). Abusive callers are **never** transferred to human agents.
 
 ---
 
 ## 3. Layer 2: Identity & Tool Authorization Guardrails
 
-Layer 2 ensures that sub-agents cannot act beyond their authorization scope or mutate customer accounts without explicit verification.
+**Primary Code References:** [`src/vay/tools/session.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tools/session.py), [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py#L257)
 
 ### 3.1 Identity Mismatch Guardrail
-- **Session-Bound Identity**: The caller's phone number is bound once to `SessionContext` at call intake and is immutable.
-- **Entity Verification**: If NLU extracts an explicit target phone number from user speech (e.g. *"Change the plan on my friend's number 9876543210"*), the orchestrator compares `_normalize_phone(entity_phone)` against `_normalize_phone(session.phone_number)`.
-- **Deterministic Refusal**: If a mismatch is detected, `identity_mismatch_node` executes immediately, speaking a fixed refusal (`IDENTITY_MISMATCH_TEMPLATES`) and logging the audit event without executing any backend tools.
+```python
+# Code snippet from src/vay/graph/nodes/orchestrator.py
+if norm_entity_phone and norm_session_phone and norm_entity_phone != norm_session_phone:
+    identity_mismatch_reply = localized(IDENTITY_MISMATCH_TEMPLATES, detected_lang)
+    # Routes to identity_mismatch_node, bypassing all sub-agents and tools
+```
+
+- Prevents a caller from querying or mutating another customer's account by naming a different phone number.
 
 ### 3.2 Two-Phase Code-Enforced Consent Gate
 
@@ -112,34 +128,54 @@ sequenceDiagram
     Graph-->>Customer: "Your plan has been successfully upgraded to Prepaid Plus."
 ```
 
-- **Staging Only**: Sensitive tools (`changePlan`, `sendPaymentLink`) never mutate the database on their initial call.
-- **Verbatim Delivery**: The `STOP_AND_SAY:` sentinel bypasses LLM prompt formatting, ensuring mandatory regulatory terms are delivered verbatim.
-- **Deterministic Confirmation**: The next turn's transcript is evaluated with exact regular expressions:
-  - `AFFIRMATION_PATTERN`: `r"^\s*(yes|confirm|agree|proceed|sure|ok|ஆம்|சரி|हाँ|स्वीकार|ha|haan)\b"`
-  - `NEGATION_PATTERN`: `r"^\s*(no|cancel|stop|dont|don't|இல்லை|வேண்டாம்|नहीं|रद्द)\b"`
-  The decision to commit the transaction is strictly code-driven and never delegated to LLM interpretation.
+```python
+# Code snippet from src/vay/tools/plans.py
+def changePlan(new_plan_id: str) -> str:
+    if not session.verified:
+        return SENSITIVE_DENIAL
+    session.pending_action = {"tool": "changePlan", "new_plan_id": new_plan_id}
+    return "STOP_AND_SAY: " + consent_script("change_plan", session.language, plan_name=new_plan_id)
+```
+
+- **Confirmation Regex**: The next turn's transcript is evaluated with [`AFFIRMATION_PATTERN`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L350) and [`NEGATION_PATTERN`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L355). Confirmation is strictly code-driven.
 
 ---
 
-## 4. Layer 3: Output & Retrieval Grounding Guardrails (`guardrail_node`)
+## 4. Layer 3: Output & Retrieval Grounding Guardrails
 
-Before any draft reply is approved for voice synthesis, `guardrail_node` executes comprehensive safety checks:
+**Primary Code Reference:** [`src/vay/graph/nodes/utils.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L52-L130)
 
-| Guardrail Check | Trigger Condition | Enforcement Action |
-|---|---|---|
-| **Retrieval Confidence Gate** | `retrieval_score < DEFAULT_MIN_SIMILARITY` (0.30) | Mark `handoff = True`, route to `human_handoff_node` |
-| **Grounded Uncertainty Check** | `UNCERTAINTY_PATTERNS.search(draft)` AND `retrieval_score < 0.50` | Route to `human_handoff_node` (allows appropriate caveating if score >= 0.50) |
-| **Output PII Leakage** | `PII_LEAK_PATTERNS.search(draft)` (API keys, tokens, OTPs, raw DB rows) | Suppress draft, route to `human_handoff_node` |
-| **Compliance Policy Check** | Draft contains sensitive keywords (`change plan`, `payment link`, `cancel`) | Queries `compliance_policy` via `compliance_policy_search()` to verify consent terms |
-| **Anti-Repetition Detox** | `_detoxify_repetition` detects token loop; `_is_complete_reply` validates punctuation | Truncates loop or substitutes safe localized fallback |
+The [`guardrail_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L52) executes Layer 3 checks before synthesis:
+
+```python
+# Code snippet from src/vay/graph/nodes/utils.py
+def guardrail_node(state: GraphState) -> GraphState:
+    # 1. Retrieval confidence floor check
+    if retrieval_score < min_similarity:
+        return {"handoff": True, "handoff_reason": f"Low retrieval confidence ({retrieval_score:.2f} < {min_similarity})."}
+    
+    # 2. Customer explicit request for human agent in transcript
+    if HUMAN_REQUEST_PATTERNS.search(state["transcript"]):
+        return {"handoff": True, "handoff_reason": "Customer requested a human agent."}
+    
+    # 3. Grounded uncertainty check (only flags if retrieval score < 0.50)
+    if UNCERTAINTY_PATTERNS.search(draft) and retrieval_score < 0.50:
+        return {"handoff": True, "handoff_reason": "Assistant signaled uncertainty with low retrieval confidence."}
+    
+    # 4. Output PII & Credential leak check
+    if PII_LEAK_PATTERNS.search(draft):
+        return {"handoff": True, "handoff_reason": "Draft reply referenced sensitive credentials (guardrail block)."}
+    
+    return {"final_reply": draft}
+```
 
 ---
 
 ## 5. Layer 4: Human Escalation & Audit Queue
 
-When an escalation occurs from any layer, `human_handoff_node` logs a complete, auditable incident packet to `handoff_log.jsonl`.
+**Primary Code Reference:** [`src/vay/graph/nodes/utils.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L140-L166)
 
-### 5.1 Redacted Context Packet Structure
+The [`human_handoff_node`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/utils.py#L140) logs context packets to `handoff_log.jsonl` using [`log_handoff()`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/core_utils.py#L510):
 
 ```json
 {
@@ -158,7 +194,4 @@ When an escalation occurs from any layer, `human_handoff_node` logs a complete, 
 }
 ```
 
-### 5.2 Clean Session Reset
-Upon completing handoff speech synthesis:
-1. The call loop automatically clears active conversation history, state variables, and `SessionContext`.
-2. The user interface resets to the ready state, preventing context bleeding between calls.
+- **Clean Session Reset**: Following handoff audio synthesis, conversational state and `SessionContext` are cleared to prevent state bleeding into future interactions.

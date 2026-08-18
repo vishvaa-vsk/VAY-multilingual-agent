@@ -1,12 +1,14 @@
 # Text-to-Speech (TTS) Pipeline
 
-This document details the Text-to-Speech (TTS) engine, script-aware neural voice routing, sentence-level pipelined synthesis, and interruptible playback architecture (Barge-In) implemented in VAY.
+This document is a technical study and reference guide for the Text-to-Speech (TTS) engine, script-aware neural voice routing, sentence-level pipelined synthesis, and interruptible playback architecture (Barge-In) in VAY.
 
 ---
 
-## 1. TTS Subsystem Overview
+## 1. Subsystem Architecture
 
-VAY uses Microsoft Edge Neural Voices via `edge-tts` (`src/vay/tts/engine.py`) to deliver natural, human-like voice synthesis across 18 languages without requiring local GPU VRAM.
+**Primary Code Reference:** [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py)
+
+VAY leverages Microsoft Edge Neural Voices via `edge-tts` to deliver high-quality, natural voice synthesis across 18 languages without GPU memory overhead:
 
 ```mermaid
 flowchart TD
@@ -39,59 +41,106 @@ flowchart TD
 
 ---
 
-## 2. Supported Languages & Neural Voice Mapping
+## 2. Neural Voice Matrix & Language Support
 
-| Language | ISO Code | Voice Identifier | Gender | Locale |
-|---|---|---|---|---|
-| **Tamil** | `ta` | `ta-IN-PallaviNeural` | Female | India |
-| **Hindi** | `hi` | `hi-IN-SwaraNeural` | Female | India |
-| **English (Indian)** | `en` / `en-IN` | `en-IN-NeerjaNeural` | Female | India |
-| **Telugu** | `te` | `te-IN-ShrutiNeural` | Female | India |
-| **Kannada** | `kn` | `kn-IN-SapnaNeural` | Female | India |
-| **Malayalam** | `ml` | `ml-IN-SobhanaNeural` | Female | India |
-| **Marathi** | `mr` | `mr-IN-AarohiNeural` | Female | India |
-| **Gujarati** | `gu` | `gu-IN-DhwaniNeural` | Female | India |
-| **Bengali** | `bn` | `bn-IN-TanishaaNeural` | Female | India |
-| **Urdu** | `ur` | `ur-IN-GulNeural` | Female | India |
-| **French** | `fr` | `fr-FR-DeniseNeural` | Female | France |
-| **German** | `de` | `de-DE-KatjaNeural` | Female | Germany |
-| **Spanish** | `es` | `es-ES-ElviraNeural` | Female | Spain |
-| **Japanese** | `ja` | `ja-JP-NanamiNeural` | Female | Japan |
-| **Korean** | `ko` | `ko-KR-SunHiNeural` | Female | Korea |
-| **Chinese (Mandarin)**| `zh` | `zh-CN-XiaoxiaoNeural`| Female | China |
-| **Arabic** | `ar` | `ar-SA-ZariyahNeural` | Female | Saudi Arabia |
-| **Russian** | `ru` | `ru-RU-SvetlanaNeural` | Female | Russia |
+**Primary Code Reference:** [`VOICES` in `src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py#L35-L56)
+
+```python
+# Code snippet from src/vay/tts/engine.py
+VOICES: dict[str, str] = {
+    "ta": "ta-IN-PallaviNeural",
+    "hi": "hi-IN-SwaraNeural",
+    "en": "en-IN-NeerjaNeural",
+    "te": "te-IN-ShrutiNeural",
+    "kn": "kn-IN-SapnaNeural",
+    "ml": "ml-IN-SobhanaNeural",
+    "mr": "mr-IN-AarohiNeural",
+    "gu": "gu-IN-DhwaniNeural",
+    "ur": "ur-IN-GulNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "de": "de-DE-KatjaNeural",
+    "es": "es-ES-ElviraNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "ko": "ko-KR-SunHiNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "ar": "ar-AE-FatimaNeural",
+    "it": "it-IT-ElsaNeural",
+    "ru": "ru-RU-SvetlanaNeural",
+}
+FALLBACK_VOICE = VOICES["en"] # en-IN-NeerjaNeural
+```
 
 ---
 
 ## 3. Script-Aware Voice Selection
 
-When multilingual models generate code-switched text, the detected turn language code might say `en` while the text content contains Tamil script (e.g. `உங்கள் plan active`).
-- **Unicode Range Detection**: `_detect_script(text)` inspects Unicode codepoint blocks (Tamil: `\u0B80-\u0BFF`, Devanagari: `\u0900-\u097F`).
-- **Voice Realignment**: If Indic script is detected in text labeled as English, the voice selector automatically routes to the native neural voice (`ta-IN-PallaviNeural` or `hi-IN-SwaraNeural`). This prevents the English TTS engine from attempting to read Indic Unicode codepoints phonetically as numeric sequences.
+**Primary Code Reference:** [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py#L260-L290)
+
+When multilingual models generate code-switched or translated text, the language metadata might state `en` while the content contains native Indic Unicode script (e.g. `உங்கள் plan active`).
+
+```python
+# Code snippet from src/vay/tts/engine.py
+def _detect_script(text: str) -> str | None:
+    for ch in text:
+        cp = ord(ch)
+        if 0x0B80 <= cp <= 0x0BFF:  # Tamil Unicode Block
+            return "ta"
+        if 0x0900 <= cp <= 0x097F:  # Devanagari Block (Hindi/Marathi)
+            return "hi"
+    return None
+```
+
+- If Tamil or Devanagari characters are detected in a reply tagged as English, the engine automatically switches to `ta-IN-PallaviNeural` or `hi-IN-SwaraNeural`. This prevents the English TTS engine from spelling out Indic Unicode codepoints as numeric sequences.
 
 ---
 
-## 4. Latency Optimization: Sentence-Level Pipelining
+## 4. Sentence-Level Streaming Pipelining
 
-In standard implementations, speech synthesis blocks until the entire multi-sentence paragraph is downloaded and written to disk, creating noticeable caller latency (1.8s - 2.5s).
+**Primary Code Reference:** [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py#L86-L211)
 
-### Optimized Pipelining Implementation:
-1. **Sentence Boundary Splitting (`_split_into_speech_chunks`)**:
-   - Splits text using regex on sentence delimiters across all supported alphabets: Latin (`.`, `!`, `?`), Devanagari danda (`।`, `॥`), and CJK fullwidth punctuation (`。`, `！`, `？`).
-   - Small responses (< 120 characters) remain intact to avoid unnecessary network roundtrips.
-2. **Asynchronous Pre-buffering (`_speak_pipelined`)**:
-   - Synthesizes Chunk 0 and starts playing it immediately using `playsound3`.
-   - While Chunk 0 is actively playing, a background thread concurrently synthesizes Chunk 1.
-   - When Chunk 0 playback finishes, Chunk 1 audio is already in memory or on disk, ready for immediate playback.
-3. **Latency Impact**:
-   - Time-to-first-audio reduced from **~1.85s** to **~1.08s** (~40% reduction for a 3-sentence reply), scaling even higher on longer responses.
+### 4.1 Speech Chunking (`_split_into_speech_chunks`)
+Splits text across Latin (`.`, `!`, `?`), Devanagari danda (`।`, `॥`), CJK punctuation (`。`, `！`, `？`), and Arabic punctuation (`؟`, `۔`).
+
+### 4.2 Pipelined Synthesis (`_speak_pipelined`)
+```python
+# Code snippet from src/vay/tts/engine.py
+async def _speak_pipelined(chunks: list[str], voice: str, stop_event: threading.Event | None = None) -> None:
+    loop = asyncio.get_running_loop()
+    next_chunk_task = asyncio.ensure_future(_synthesize_chunk(chunks[0], voice))
+    
+    for i in range(len(chunks)):
+        if stop_event and stop_event.is_set():
+            break
+        current_path = await next_chunk_task
+        
+        # Pre-synthesize next chunk in background while playing current chunk
+        if i + 1 < len(chunks):
+            next_chunk_task = asyncio.ensure_future(_synthesize_chunk(chunks[i + 1], voice))
+            
+        await loop.run_in_executor(None, _play_file, current_path, stop_event)
+```
+
+- **Latency Gain**: Time-to-first-audio drops from **~1.85s** to **~1.08s** (~40% faster) because playback starts as soon as Sentence 0 is ready.
 
 ---
 
 ## 5. Non-Blocking Interruptible Playback (Barge-In)
 
-To support natural conversation flow where the user speaks before the assistant finishes:
-- **`stop_event: threading.Event`**: Passed into `tts.speak()` by the call loop (`scripts/run_voice.py`).
-- **Non-Blocking Sound Polling (`_play_file`)**: Audio is started asynchronously (`block=False`). A lightweight polling loop (`_BARGE_IN_POLL_S = 0.05s`) monitors `sound.is_alive()` and checks `stop_event.is_set()`.
-- **Immediate Termination**: If `stop_event` is set, `sound.stop()` terminates the audio subprocess immediately, cancels any upcoming synthesis tasks, and safely cleans up temporary MP3 files.
+**Primary Code Reference:** [`_play_file` in `src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py#L121-L148)
+
+```python
+# Code snippet from src/vay/tts/engine.py
+def _play_file(path: str, stop_event: threading.Event | None = None) -> None:
+    if stop_event is None:
+        playsound(path)
+    else:
+        sound = playsound(path, block=False)
+        while sound.is_alive():
+            if stop_event.is_set():
+                sound.stop() # Instant process termination
+                break
+            time.sleep(0.05) # 50ms polling loop
+```
+
+- If the caller begins speaking, `STTPipeline` fires `on_barge_in()`, which sets `stop_event`.
+- The polling loop stops `playsound3` within 50 ms and deletes temporary audio files.
