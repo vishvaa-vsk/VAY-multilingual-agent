@@ -158,8 +158,11 @@ Sub-agents execute tools iteratively up to a bounded limit (`MAX_TOOL_ITERATIONS
 
 ## 6. Guardrail and Compliance Node (`src/vay/graph/nodes/utils.py`)
 
-Before a draft reply is sent to the customer, `guardrail_node` inspects the state:
-- **Retrieval Confidence Gate**: Checks if `retrieval_score < DEFAULT_MIN_SIMILARITY` (0.30).
-- **PII Leakage Regex**: Ensures phone numbers, OTPs, or mock internal tokens are not leaked in plain text.
-- **Uncertainty Phrase Matching**: Detects unconfident AI responses (e.g., `"I am not sure"`, `"As an AI language model"`) and converts them to human handoffs.
-- **Explicit Escalation Match**: Scans user input for human escalation requests (`"agent"`, `"human"`, `"representative"`).
+Before a draft reply is approved for voice synthesis, `guardrail_node` inspects the state:
+- **Retrieval Confidence Gate**: Verifies `retrieval_score >= min_similarity` (default 0.30), routing low-confidence answers to `human_handoff_node`.
+- **PII Leakage Scan**: Prevents credential, OTP, or token leakage via `PII_LEAK_PATTERNS`.
+- **Grounded Uncertainty Check**: Evaluates `UNCERTAINTY_PATTERNS` only when retrieval confidence is below 0.50 (distinguishing appropriate caveating from ignorance).
+- **Compliance Policy KB Query**: Queries `compliance_policy` for mandated consent language on sensitive operations (`compliance_policy_search`).
+- **Customer Escalation Request**: Checks if the user's transcript explicitly requested a live representative (`HUMAN_REQUEST_PATTERNS`).
+
+For a complete breakdown of all 4 guardrail layers (Input PII scans, Identity mismatch verification, Two-phase consent, and Audit logging), see [Compliance, Multi-Layer Guardrails & Human Handoff](guardrails_and_handoff.md).

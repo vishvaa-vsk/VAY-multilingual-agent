@@ -1,167 +1,164 @@
 # Speech-to-Text (STT) and ASR Pipeline
 
-This document provides a comprehensive technical breakdown of the Speech-to-Text (STT), Automatic Speech Recognition (ASR), and real-time Barge-In (Interruption Handling) architecture implemented in VAY.
+This document provides a comprehensive technical breakdown of the Speech-to-Text (STT), Automatic Speech Recognition (ASR), Voice Activity Detection (VAD), and real-time Barge-In (Interruption Handling) architecture implemented in VAY.
 
 ---
 
-## 1. Pipeline Overview
+## 1. Architecture Flowchart
 
-The voice intake pipeline processes real-time audio from the user's microphone or raw audio streams, segments speech through Voice Activity Detection (VAD), handles caller interruptions (Barge-In) over active TTS playback, determines the spoken language without redundant inference, and routes the audio tensor to the optimal ASR engine.
+The diagram below reflects the exact data and control flow across `src/vay/audio/vad.py`, `src/vay/audio/pipeline.py`, `src/vay/asr/router.py`, `src/vay/asr/indic.py`, `src/vay/asr/whisper.py`, and `scripts/run_voice.py`.
 
 ```mermaid
 flowchart TD
-    Mic([Microphone Input / Audio Stream]) --> VAD[Silero VAD / Energy Boundary Detector]
-    
-    subgraph BargeInInterruption ["Barge-In Interruption Check"]
-        VAD -->|Speech Start Detected| TTSCheck{Is Assistant Speaking?<br/>tts_active is set}
-        TTSCheck -->|Yes| FireBargeIn["Trigger on_barge_in Callback<br/>(Set stop_event -> Cut TTS)"]
-        TTSCheck -->|No| NormalAudio[Accumulate Speech Audio]
-        FireBargeIn --> NormalAudio
+    subgraph CaptureAndVAD ["1. Capture & VAD (vad.py)"]
+        Mic([Microphone Audio 16kHz]) --> Streamer[SileroVADStreamer: blocksize=512]
+        Streamer --> ModelInfer[Silero VAD snakers4/silero-vad: speech_prob]
+        
+        ModelInfer --> PreBuffer[Ring Buffer: 300ms pre-speech audio]
+        ModelInfer --> SpeechDetect{speech_prob > threshold 0.5?}
+        
+        SpeechDetect -->|Speech Onset| OnSpeechStart[on_speech_start Hook]
+        OnSpeechStart --> TTSActiveCheck{tts_active is set & barge_in enabled?}
+        TTSActiveCheck -->|Yes: Barge-In Event| FireBargeIn["on_barge_in() -> set TTS stop_event<br/>(Immediately cuts playsound3)"]
+        TTSActiveCheck -->|No| Accumulate[Accumulate Utterance Frames]
+        FireBargeIn --> Accumulate
+        
+        ModelInfer --> SilenceCheck{Silence Duration > 700ms?}
+        SilenceCheck -->|Utterance Boundary| YieldUtterance[Concatenate Utterance & Reset Model States]
     end
-    
-    NormalAudio -->|Silence ~650ms detected| Queue[Utterance Queue]
-    Queue --> Consumer[STTPipeline Background Consumer]
-    
-    Consumer --> LengthCheck{Audio Duration >= 0.5s?<br/>_MIN_UTTERANCE_SAMPLES >= 8000}
-    LengthCheck -->|No / Noise Bursts| Discard[Discard Spurious Capture]
-    LengthCheck -->|Yes| AutoTranscribe[Whisper transcribe_auto]
-    
-    AutoTranscribe -->|Single Groq Roundtrip| LID[Extract Language & Text]
-    LID --> RouteEval{Language in Tier 1?}
-    
-    RouteEval -->|Indic Language: ta, hi, etc.| IndicEngine[IndicConformer ASR]
-    RouteEval -->|English / Global: en, fr, de, etc.| WhisperResult[Use Whisper Transcript]
-    
-    IndicEngine --> EmptyCheck{Indic Output Empty?}
-    EmptyCheck -->|Yes / Fallback| WhisperResult
-    EmptyCheck -->|No| IndicResult[Use IndicConformer Transcript]
-    
-    IndicResult --> PostFilter[Punctuation & Hallucination Filter]
-    WhisperResult --> PostFilter
-    
-    PostFilter --> LangGraphHook[STTPipeline Callback -> LangGraph VoiceCallSession]
+
+    subgraph PipelineQueue ["2. Producer-Consumer Pipeline (pipeline.py)"]
+        YieldUtterance --> UtteranceQueue[utterance_queue.put]
+        UtteranceQueue --> ConsumerLoop[Background Thread: _consumer_loop]
+        
+        ConsumerLoop --> LenCheck{Samples >= _MIN_UTTERANCE_SAMPLES<br/>len >= 8000 ~0.5s?}
+        LenCheck -->|No: Mic Click / Spurious Noise| SkipUtterance[Discard Utterance]
+        LenCheck -->|Yes| CacheTensor["Cache self.last_audio_tensor<br/>Convert to torch.Tensor"]
+    end
+
+    subgraph RoutingAndASR ["3. Dual-Tier Routing (router.py, whisper.py, indic.py)"]
+        CacheTensor --> WhisperAuto["WhisperASR.transcribe_auto(audio_tensor)<br/>Single Groq API call (verbose_json)"]
+        WhisperAuto --> ParseResp["Extract detected_language & raw_text<br/>Calculate confidence from segment logprobs<br/>Filter hallucinations & dedup repeated words"]
+        
+        ParseResp --> TierCheck{detected_language in tier1_languages?<br/>22 Indian Languages}
+        
+        TierCheck -->|Yes: Indic Language| IndicRun["IndicConformerASR.transcribe(audio_tensor, lang)<br/>AutoModel rnnt decoding"]
+        TierCheck -->|No: English / Global| ReturnWhisper[Use Whisper ASRResult]
+        
+        IndicRun --> IndicEmptyCheck{IndicConformer raw_text empty?}
+        IndicEmptyCheck -->|Yes / Fallback| ReturnWhisper
+        IndicEmptyCheck -->|No| ReturnIndic[Use IndicConformer ASRResult]
+    end
+
+    subgraph DownstreamSession ["4. Voice Session Dispatch (run_voice.py)"]
+        ReturnWhisper --> Callback[STTPipeline.callback -> on_asr_result]
+        ReturnIndic --> Callback
+        
+        Callback --> PunctuationFilter{_NOISE_TRANSCRIPT_RE match?<br/>Pure whitespace/punctuation}
+        PunctuationFilter -->|Yes| DropNoise[Discard Hallucinated Noise Turn]
+        
+        PunctuationFilter -->|No| LowConfRetry{Whisper Conf < 0.50 & Tier-2<br/>AND session.preferred_language in Tier-1?}
+        LowConfRetry -->|Yes| RetryIndic["Re-invoke router.route_and_transcribe<br/>(last_audio_tensor, override_language=pref)"]
+        RetryIndic --> InvokeGraph[Build GraphState & Invoke LangGraph]
+        LowConfRetry -->|No| InvokeGraph
+    end
 ```
 
 ---
 
-## 2. Voice Activity Detection (VAD) & Barge-In
+## 2. Voice Activity Detection (VAD) & Real-Time Barge-In
 
-The VAD subsystem isolates conversational utterances and manages interruption signals.
+The VAD subsystem isolates speech utterances and dispatches low-latency interruption signals.
 
 ### 2.1 Implementation Details (`src/vay/audio/vad.py`)
-- **Engine**: Silero VAD / silence threshold stream detector (`SileroVADStreamer`).
-- **Sample Rate**: Standardized to 16,000 Hz mono PCM float32 tensors.
-- **Utterance Boundary Detection**: An active speech segment is marked completed when silence persists for ~600 ms to 700 ms after vocal energy.
-- **Minimum Duration Gate**: Audio buffers with fewer than 8,000 samples (< 0.5 seconds) are discarded prior to ASR invocation to prevent spurious ambient noise triggers.
+- **Model**: `snakers4/silero-vad` loaded via `torch.hub.load` and maintained in evaluation mode (`self.model.eval()`).
+- **Audio Specification**: 16,000 Hz, 1-channel mono, 32-bit floating point PCM (`sounddevice.InputStream`).
+- **Frame Processing**: Evaluates non-overlapping chunks of 512 samples (~32 ms per step).
+- **Pre-Speech Buffer**: A 300 ms circular ring buffer (`self.ring_buffer`) preserves the initial vocal onset frames before the VAD threshold is crossed.
+- **Utterance Boundary**: An active utterance completes when speech probability remains below `threshold` (0.50) for `min_silence_duration_ms` (700 ms).
+- **GRU State Reset**: `self.model.reset_states()` is explicitly invoked after every utterance to prevent recurrent hidden states from accumulating drift across turns.
 
-### 2.2 Real-Time Barge-In (Interruption Handling)
-VAY enables callers to interrupt the assistant mid-sentence rather than forcing them to wait for a long TTS paragraph to complete:
-- **`barge_in=True` Mode**: The microphone stream remains open and actively monitored while the assistant speaks.
-- **Speech Onset Hook (`on_speech_start`)**: When the VAD detector identifies vocal onset while `tts_active` is set, `STTPipeline._on_speech_start()` immediately executes the `on_barge_in` callback.
-- **Immediate Playback Termination**: The callback sets the `stop_event` on the running TTS thread, killing the child `playsound3` audio playback process within ~50ms (`_BARGE_IN_POLL_S = 0.05s`).
-- **Headset / Acoustic Considerations**: Full duplex barge-in operates best with headsets or directional microphones. For speaker-only setups without hardware Acoustic Echo Cancellation (AEC), the system provides an optional `barge_in=False` flag that reverts to hard mute/unmute during playback.
+### 2.2 Barge-In Interruption Mechanics
+- **Early Speech Hook (`on_speech_start`)**: Triggered immediately when `speech_prob > threshold` during the waiting state (before waiting for the 700 ms trailing silence).
+- **Armed Window (`begin_tts()` / `end_tts()`)**: The `STTPipeline` sets `self.tts_active = True` during assistant speech synthesis and playback.
+- **Interruption Signal**: If speech starts while `tts_active` is set and `barge_in_enabled` is True:
+  1. `_barge_in_fired` is set to ensure the callback runs at most once per turn.
+  2. `self.on_barge_in()` is invoked from the VAD producer thread.
+  3. The callback sets the `stop_event` on the running TTS thread, stopping the non-blocking `playsound3` audio playback process within ~50 ms.
+- **Acoustic Fallback**: For speaker-only setups without headsets or hardware Acoustic Echo Cancellation (AEC), passing `--no_barge_in` enables the hard `mute()`/`unmute()` path with a 400 ms room-settling delay to prevent speaker echo feedback.
 
 ---
 
-## 3. Dual-Tier ASR Routing Architecture
+## 3. Producer-Consumer Pipeline Architecture (`src/vay/audio/pipeline.py`)
 
-To balance multilingual accuracy for Indian languages with low latency and broad global language support, VAY utilizes a dual-tier ASR engine architecture (`src/vay/asr/router.py`).
+`STTPipeline` manages the asynchronous handoff between the audio capture loop and transcription worker:
 
-| Tier | Target Languages | Primary Engine | Backend / Runtime |
+1. **Producer Loop (Main Thread)**: Reads chunks from `SileroVADStreamer.stream()` and enqueues completed utterance arrays into `self.utterance_queue`.
+2. **Consumer Loop (`_consumer_loop` Background Thread)**:
+   - **Minimum Length Guard**: Discards any audio buffer with fewer than `_MIN_UTTERANCE_SAMPLES = 8000` samples (< 0.5 s). This filters out microphone clicks, pops, and residual speaker echo.
+   - **Audio Tensor Caching**: Stores `self.last_audio_tensor = torch.from_numpy(utterance)` so downstream error recovery can re-run alternative model passes without re-recording audio.
+   - **ASR Routing**: Passes the audio tensor to `ASRRouter.route_and_transcribe()`.
+   - **Callback Dispatch**: Dispatches the resulting `ASRResult` to `self.callback`.
+
+---
+
+## 4. Dual-Tier ASR Router & Language Identification (`src/vay/asr/router.py`)
+
+VAY employs a dual-tier model hierarchy to optimize Indian language accuracy and global language support.
+
+| Tier | Covered Languages | Engine | Runtime Execution |
 |---|---|---|---|
-| **Tier 1** | 22 Scheduled Indian Languages (`ta`, `hi`, `te`, `kn`, `ml`, `mr`, `gu`, `bn`, `pa`, `or`, `as`, etc.) | `ai4bharat/indic-conformer-600m-multilingual` | PyTorch `AutoModel` with CTC Decoding |
+| **Tier 1** | 22 Scheduled Indian Languages (`ta`, `hi`, `te`, `kn`, `ml`, `mr`, `gu`, `bn`, `pa`, `or`, `as`, `ur`, `sa`, `sd`, `kok`, `ks`, `doi`, `mai`, `mni`, `ne`, `sat`, `brx`) | `ai4bharat/indic-conformer-600m-multilingual` | Local PyTorch `AutoModel` with RNN-T Decoding |
 | **Tier 2** | English (`en`) + 90 Global Languages | `openai/whisper-large-v3-turbo` | Groq Cloud API (`whisper-large-v3-turbo`) |
 
----
+### 4.1 Single-Pass Auto-Transcription (`src/vay/asr/whisper.py`)
+- The router invokes `whisper_asr.transcribe_auto(audio_tensor)`.
+- `transcribe_auto()` sends the audio tensor as 16-bit 16kHz WAV bytes to Groq Whisper with `response_format="verbose_json"` and no language hint.
+- Whisper returns both the detected language (`response.language`) and the full transcription text in **one API round-trip**, cutting latency by ~50% compared to a two-step (detect then transcribe) approach.
 
-## 4. Model Loading and Execution Specifics
+### 4.2 Language Normalization & Code Mapping
+- `_LANGUAGE_NAME_TO_CODE`: Normalizes full English language names (e.g. `"tamil"` -> `"ta"`, `"hindi"` -> `"hi"`, `"thai"` -> `"th"`).
+- `_GROQ_VALID_LANGUAGE_CODES`: Validates recognized ISO codes to avoid API 400 errors.
 
-### 4.1 IndicConformer (`src/vay/asr/indic.py`)
-- **Model Identifier**: `ai4bharat/indic-conformer-600m-multilingual`
-- **Execution Mode**: Direct `AutoModel.from_pretrained(..., trust_remote_code=True)` invocation with explicit language token passing:
-  ```python
-  model(wav_tensor, language_code, "ctc")
-  ```
-- **Important Constraint**: HuggingFace `transformers.pipeline()` must not be used with IndicConformer because custom model configuration classes in the remote code cause pipeline instantiation failures.
-
-### 4.2 Whisper Auto-Transcription & Zero-Overhead LID (`src/vay/asr/whisper.py`)
-- **Optimized Single-Pass Transcription**: Rather than making a separate LID call followed by a second transcription request, the router calls `transcribe_auto(audio)`.
-- **Groq API Response**: Whisper's `verbose_json` returns both the detected language code and full transcription text in a single round-trip:
-  ```python
-  response = client.audio.transcriptions.create(
-      file=("audio.wav", wav_bytes),
-      model="whisper-large-v3-turbo",
-      response_format="verbose_json",
-  )
-  detected_lang = response.language
-  raw_text = response.text
-  ```
-- **Latency Gain**: Cuts Whisper turn latency from 2 round-trips (~1.8s) to 1 round-trip (~0.6s - 0.9s).
+### 4.3 Tier 1 Execution & Fallback (`src/vay/asr/indic.py`)
+- If the detected language belongs to `settings.tier1_languages`:
+  1. The router executes `indic_asr.transcribe(audio_tensor, language=detected_lang)`.
+  2. `IndicConformerASR` loads `ai4bharat/indic-conformer-600m-multilingual` via `AutoModel.from_pretrained(..., trust_remote_code=True, token=hf_token)` and executes `self.model(audio_tensor.view(1, -1), language, "rnnt")`.
+  3. If IndicConformer returns an empty string, the router falls back to the Whisper transcript obtained in step 1.
+- If the detected language is Tier 2 (e.g., English), the router returns the Whisper result directly without a second inference pass.
 
 ---
 
-## 5. Language Normalization and Mapping
+## 5. Downstream Session Handling & Recovery (`scripts/run_voice.py`)
 
-Groq Whisper frequently returns full language names (for example, `"tamil"`, `"hindi"`, `"thai"`) rather than ISO 639-1 two-letter codes.
-- `_LANGUAGE_NAME_TO_CODE`: A dictionary mapping 60+ English language names to ISO 639-1 strings.
-- `_GROQ_VALID_LANGUAGE_CODES`: A frozenset validating recognized language tags.
-- Fallback resolution ensures that unrecognized language strings do not trigger 400 Bad Request errors in downstream services.
+When `VoiceCallSession.on_asr_result(result)` receives the transcription:
 
----
-
-## 6. Dynamic Language Switching & State Isolation
-
-In previous versions, a persistent `locked_language` variable could permanently lock the assistant into the first detected language across subsequent turns.
-
-### Current Implementation:
-1. **Per-Utterance Detection**: Language is detected dynamically on every turn.
-2. **State Cleanup**: `_reset_utterance_state()` runs inside a `try/finally` block on every `route_and_transcribe()` call.
-3. **Low-Confidence Retry with Customer Preference**:
-   - If Whisper detects a Tier-2 language with confidence < 0.50, but the customer account's registered language in SQLite is a Tier-1 Indic language (such as Tamil), the router re-runs the cached audio tensor through IndicConformer using the registered language code.
-   - If IndicConformer yields valid text, it supersedes the low-confidence Whisper output.
+1. **Noise Transcript Filter**: Evaluates `_NOISE_TRANSCRIPT_RE = r'^[\s.,!?…\-–—\'\"]+$'`. Transcripts consisting solely of punctuation are dropped to prevent spurious chitchat turns.
+2. **Account-Aware Low-Confidence Retry**:
+   - If Whisper detects a Tier-2 language with low confidence (`confidence < 0.50`), but the customer's database profile (`customers.language_pref`) is an Indic Tier-1 language (e.g. Tamil `ta`), the system re-runs `router.route_and_transcribe(last_audio_tensor, override_language=preferred_lang)`.
+   - If IndicConformer yields valid transcribed text, it replaces the low-confidence Whisper output.
+3. **Graph State Injection**: Injects `transcript = result.raw_text` and `language = result.detected_language` into `GraphState` and invokes the LangGraph state machine.
 
 ---
 
-## 7. Transcript Post-Processing and Hallucination Filtering
+## 6. Hallucination Filtering (`src/vay/asr/hallucinations.py`)
 
-Whisper and CTC models can occasionally hallucinate repetitive characters, subtitle credits, or pure punctuation during silence or background hum.
-
-### Filtering Rules (`src/vay/asr/hallucinations.py`):
-1. **Punctuation Rejection**: Rejects strings matching `^[\s.,!?…\-–—\'\"]+$`.
-2. **Repetition Detox**: Truncates repetitive phrases where small N-grams loop repeatedly.
-3. **Common Subtitle Hallucinations**: Strips phrases such as `"Thank you for watching"`, `"Subtitles by"`, or `"Amara.org"`.
+`WhisperASR.filter_hallucinations(text, language_code)` applies two deterministic cleaning passes:
+1. **Consecutive Word Deduplication**: Removes stuttered tokens (`"the the"` -> `"the"`).
+2. **Blacklist Matching**: Compares stripped, normalized text against `HALLUCINATION_BLACKLIST` containing known subtitle and silence artifacts (such as `"Thank you for watching"`, `"Subtitles by"`, or `"Amara.org"`). If matched, the text is suppressed to an empty string.
 
 ---
 
-## 8. Data Contract: ASR to LangGraph
-
-The output of the speech pipeline is encapsulated in a Pydantic `ASRResult` object (`src/vay/types.py`):
-
-```python
-class ASRResult(BaseModel):
-    raw_text: str
-    detected_language: str
-    language_tier: LanguageTier  # "tier_1" | "tier_2"
-    confidence: float
-    model_used: str
-```
-
-This model is consumed by `VoiceCallSession.on_asr_result()` and injected directly into `GraphState`:
-- `transcript = result.raw_text`
-- `language = result.detected_language`
-
----
-
-## 9. Performance & Accuracy Benchmarks
+## 7. Measured Benchmark Results
 
 Evaluated on 200 Mozilla Common Voice test samples per language:
 
-| Language | Number of Samples | Whisper WER (%) | Whisper CER (%) | Whisper Avg Time (s) | IndicConformer WER (%) | IndicConformer CER (%) | IndicConformer Avg Time (s) |
+| Language | Test Samples | Whisper WER (%) | Whisper CER (%) | Whisper Avg Time (s) | IndicConformer WER (%) | IndicConformer CER (%) | IndicConformer Avg Time (s) |
 |---|---|---|---|---|---|---|---|
 | **Tamil** | 200 | 62.44% | 17.87% | 0.88s | **26.06%** | **5.52%** | 1.65s |
 | **Hindi** | 200 | 35.10% | 17.60% | 0.60s | **12.00%** | **6.30%** | 1.12s |
 | **English** | 200 | **3.79%** | **7.09%** | **0.32s** | N/A | N/A | N/A |
 
-### Key Takeaways:
-- **IndicConformer is essential for Indian languages**: IndicConformer achieves a **58% relative WER reduction in Tamil** (62.44% down to 26.06%) and a **66% relative WER reduction in Hindi** (35.10% down to 12.00%) compared to Whisper Large v3 Turbo.
-- **Whisper is optimal for English and Global Fallback**: Near-instant transcription (0.32s) with 3.79% WER.
+### Empirical Insights:
+- **IndicConformer delivers high accuracy for Indian languages**: **26.06% WER in Tamil** (vs. 62.44% for Whisper) and **12.00% WER in Hindi** (vs. 35.10% for Whisper).
+- **Whisper excels at English and Zero-Overhead LID**: **3.79% WER in English** with fast API inference (0.32s).
