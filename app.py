@@ -475,6 +475,12 @@ if "tts_chunk_queue" not in st.session_state:
     st.session_state.tts_chunk_queue = []
 if "tts_next_future" not in st.session_state:
     st.session_state.tts_next_future = None
+if "tts_more_pending" not in st.session_state:
+    # True while the chunk currently in audio_to_play is NOT the reply's
+    # last one — tells the frontend to hold off switching to "listening"
+    # (and resuming the mic) until the whole reply has actually finished,
+    # instead of flickering between chunks.
+    st.session_state.tts_more_pending = False
 if "tts_lang" not in st.session_state:
     st.session_state.tts_lang = "en"
 if "tts_executor" not in st.session_state:
@@ -697,6 +703,7 @@ def process_real_audio(base64_audio):
             st.session_state.audio_to_play = encode_audio_bytes(tts_bytes)
             st.session_state.status = "speaking"
             st.session_state.tts_lang = detected_lang
+            st.session_state.tts_more_pending = len(chunks) > 1
             if len(chunks) > 1:
                 st.session_state.tts_chunk_queue = chunks[2:]
                 st.session_state.tts_next_future = st.session_state.tts_executor.submit(
@@ -709,6 +716,7 @@ def process_real_audio(base64_audio):
             st.session_state.status = "idle"
             st.session_state.tts_chunk_queue = []
             st.session_state.tts_next_future = None
+            st.session_state.tts_more_pending = False
             
         print("[process_real_audio] Done! Triggering rerun.")
         st.rerun()
@@ -1016,6 +1024,7 @@ else:
         glassSize=glass_size,
         status=st.session_state.status,
         audio_data=st.session_state.audio_to_play,
+        more_chunks_pending=st.session_state.get("tts_more_pending", False),
         key=f"strands_element_{st.session_state.component_key}"
     )
 
@@ -1062,6 +1071,7 @@ else:
                         st.session_state.audio_to_play = None
                         st.session_state.tts_chunk_queue = []
                         st.session_state.tts_next_future = None
+                        st.session_state.tts_more_pending = False
 
                     if st.session_state.get("tts_next_future") is not None:
                         # More of the reply is queued — hand over the chunk
@@ -1084,6 +1094,10 @@ else:
                             st.session_state.audio_to_play = encode_audio_bytes(next_bytes)
                             st.session_state.status = "speaking"
                             queue = st.session_state.tts_chunk_queue
+                            # Is there anything queued AFTER this chunk we're
+                            # about to hand over? If so, tell the frontend to
+                            # keep holding off on "listening" past this one too.
+                            st.session_state.tts_more_pending = bool(queue)
                             if queue:
                                 st.session_state.tts_chunk_queue = queue[1:]
                                 st.session_state.tts_next_future = st.session_state.tts_executor.submit(
@@ -1093,6 +1107,7 @@ else:
                                 st.session_state.tts_next_future = None
                         else:
                             # Synthesis failed — stop here rather than getting stuck.
+                            st.session_state.tts_more_pending = False
                             if st.session_state.get("pending_handoff"):
                                 bump_component_key = True
                                 _do_handoff_reset()
@@ -1119,12 +1134,14 @@ else:
                     st.session_state.audio_to_play = None
                     st.session_state.tts_chunk_queue = []
                     st.session_state.tts_next_future = None
+                    st.session_state.tts_more_pending = False
                     st.rerun()
 
             elif event_name in ("mic_pause", "mic_stop"):
                 if st.session_state.status != "idle":
                     st.session_state.status = "idle"
                     st.session_state.audio_to_play = None
+                    st.session_state.tts_more_pending = False
                     st.session_state.tts_chunk_queue = []
                     st.session_state.tts_next_future = None
                     st.rerun()
@@ -1146,5 +1163,6 @@ else:
                 st.session_state.audio_to_play = None
                 st.session_state.tts_chunk_queue = []
                 st.session_state.tts_next_future = None
+                st.session_state.tts_more_pending = False
                 st.session_state.component_key += 1
                 st.rerun()
