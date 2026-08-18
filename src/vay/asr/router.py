@@ -31,8 +31,6 @@ switched languages.  The per-utterance state reset in ``_reset_utterance_state``
 ensures each call gets a fresh detection pass.
 """
 
-from __future__ import annotations
-
 import torch
 
 from vay.asr.indic import IndicConformerASR
@@ -42,11 +40,7 @@ from vay.types import ASRResult
 
 
 class ASRRouter:
-    """Routes incoming audio to the appropriate ASR model based on detected language.
-
-    Each call to ``route_and_transcribe`` is independent — language is detected
-    fresh from the full utterance audio on every call.
-    """
+    """Routes incoming audio to the appropriate ASR model based on detected language."""
 
     def __init__(self) -> None:
         self.indic_asr = IndicConformerASR(model_id=settings.indic_asr_model)
@@ -72,67 +66,53 @@ class ASRRouter:
     def route_and_transcribe(
         self, audio_tensor: torch.Tensor, override_language: str | None = None
     ) -> ASRResult:
-        """Detect language and transcribe in the fewest possible API calls.
+        """Detect language and transcribe.
 
-        **Tier-2 (en + other languages):** Single Groq API call — Whisper's
-        ``verbose_json`` response includes both the detected language code and
-        the transcribed text, so no second call is needed.
+        **Language Detection:** Uses Whisper API for auto-detection.
 
-        **Tier-1 (Indic languages):** One Groq call for detection/text, then
-        IndicConformer (local model, no extra API call) for higher-accuracy
-        transcription.  The Whisper text is used as a fallback if IndicConformer
-        returns an empty result.
+        **Tier-1 (Indic languages):** Calls IndicConformer (local model). 
+        Falls back to Whisper if IndicConformer returns an empty result.
 
-        Args:
-            audio_tensor: 1-D float32 audio tensor at 16 kHz (mono).
-            override_language: Hard-code the language (skips auto-detection).
-
-        Returns:
-            ASRResult from the selected ASR model.
+        **Tier-2 (en + other languages):** Uses Groq Whisper API result directly.
         """
         if override_language:
             print(f"[Router] Language overridden to '{override_language}'.")
             return self._transcribe_with_lang(audio_tensor, override_language)
 
         # ------------------------------------------------------------------
-        # SINGLE-PASS: one API call → language code + transcription text
+        # STEP 1: Acoustic Language Detection & Transcription via Whisper
         # ------------------------------------------------------------------
         whisper_result = self.whisper_asr.transcribe_auto(audio_tensor)
         detected_lang = whisper_result.detected_language
-        confidence = whisper_result.confidence
 
         self.last_detected_language = detected_lang
-        self.last_detected_confidence = confidence
+        self.last_detected_confidence = whisper_result.confidence
 
         print(
             f"[Router] Detected language '{detected_lang}' "
-            f"(confidence: {confidence:.2f}) from full utterance."
+            f"(confidence: {whisper_result.confidence:.2f}) via Whisper Auto-Detect."
         )
 
+        # ------------------------------------------------------------------
+        # STEP 2: Routing to ASR Model
+        # ------------------------------------------------------------------
         if detected_lang in settings.tier1_languages:
-            # Re-transcribe with IndicConformer for Indic-language accuracy
+            # Transcribe with IndicConformer for Indic-language accuracy
             print(f"[Router] Language: {detected_lang} → IndicConformer (Tier 1)")
             indic_result = self.indic_asr.transcribe(audio_tensor, language=detected_lang)
 
-            # Fallback: if IndicConformer returns nothing, use the Whisper text
-            if not indic_result.raw_text.strip() and whisper_result.raw_text.strip():
+            # Fallback: if IndicConformer returns nothing, return Whisper result
+            if not indic_result.raw_text.strip():
                 print(
                     "[Router] IndicConformer returned empty — "
-                    "falling back to Whisper transcription."
+                    "falling back to Whisper API."
                 )
-                return ASRResult(
-                    raw_text=whisper_result.raw_text,
-                    detected_language=detected_lang,
-                    language_tier=whisper_result.language_tier,
-                    confidence=whisper_result.confidence,
-                    model_used=f"{whisper_result.model_used} (fallback)",
-                )
+                return whisper_result
             return indic_result
 
         else:
-            # Tier-2: reuse the Whisper result from the detection pass
-            # (no second API call)
-            print(f"[Router] Language: {detected_lang} → Whisper (Tier 2, single-pass)")
+            # Tier-2: Return the Whisper API result we already got in Step 1
+            print(f"[Router] Language: {detected_lang} → Whisper API (Tier 2)")
             return whisper_result
 
     def _transcribe_with_lang(
