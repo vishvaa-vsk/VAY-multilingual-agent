@@ -212,7 +212,7 @@ def _is_near_duplicate_query(tool_name: str, args: dict, seen_queries: dict) -> 
 ### Safety and Latency Optimizations:
 1. **Near-Duplicate Query Guard**: Computes Jaccard token overlap (threshold 0.50) on repeated tool search queries to block runaway search loops.
 2. **STOP_AND_SAY Sentinel Bypass**: Detects `STOP_AND_SAY:` prefixes returned by sensitive tools and returns the text verbatim, bypassing LLM paraphrasing.
-3. **Anti-Repetition Detox ([`_detoxify_repetition`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L32))**: Prevents small models (`llama-3.1-8b-instant`) from looping repeated phrases when translating numerical data to Indic languages.
+3. **Anti-Repetition Detox ([`_detoxify_repetition`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L32))**: Prevents generative models (`openai/gpt-oss-20b`) from looping repeated phrases when translating numerical data to Indic languages.
 4. **Sentence Fragment Guard ([`_is_complete_reply`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py#L65))**: Ensures responses do not end with dangling commas or incomplete clauses.
 
 ---

@@ -36,7 +36,7 @@ Measured across typical multi-sentence customer interactions:
 | **VAD Segmentation** | [`src/vay/audio/vad.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/audio/vad.py) | ~650 ms | ~700 ms | 700ms silence thresholding |
 | **ASR Inference (Tier 1)** | [`src/vay/asr/indic.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/indic.py) | ~1.10 s | ~1.65 s | PyTorch `AutoModel` RNN-T decoding |
 | **ASR Inference (Tier 2)** | [`src/vay/asr/whisper.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/asr/whisper.py) | ~320 ms | ~600 ms | Single-pass `transcribe_auto` |
-| **Orchestration & NLU** | [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py) | ~280 ms | ~450 ms | Strict JSON output format |
+| **Orchestration & NLU** | [`src/vay/graph/nodes/orchestrator.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/nodes/orchestrator.py) | ~280 ms | ~450 ms | Groq `openai/gpt-oss-20b` (low reasoning effort) |
 | **Sub-Agent Tool Loop** | [`src/vay/graph/tool_agent.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/graph/tool_agent.py) | ~450 ms | ~850 ms | Jaccard duplicate query filter |
 | **RAG Retrieval** | [`src/vay/rag/hybrid.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/rag/hybrid.py) | ~35 ms | ~65 ms | In-memory BM25 index caching |
 | **TTS Time-to-First-Audio** | [`src/vay/tts/engine.py`](file:///home/vishvaa/Projects/VAY-multilingual-agent/src/vay/tts/engine.py) | **~1.08 s** | **~1.35 s** | Sentence-level pre-buffering |

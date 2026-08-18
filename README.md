@@ -118,7 +118,7 @@ uv sync
 cp .env.example .env
 # Edit .env and set:
 # GROQ_API_KEY="gsk_..."
-# GROQ_MODEL="llama-3.1-8b-instant"
+# GROQ_MODEL="openai/gpt-oss-20b"
 ```
 
 ---
