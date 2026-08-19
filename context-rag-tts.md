@@ -42,7 +42,6 @@
 
 **Use Case:** Multilingual GenAI Voice Assistant for Telecom Customer Care  
 **Operator:** Nexatel Communications (mock)  
-**Hackathon:** Velammal-AIA Partnership / Cognizant, Use Case #15 of 18  
 **Timeline:** Aug 12–18, 2026 (7 days), evaluation Aug 19  
 
 The assistant handles telecom self-service across Tamil, Hindi, English, and 15+ other languages:

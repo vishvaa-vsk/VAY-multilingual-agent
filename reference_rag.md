@@ -77,13 +77,14 @@ Built in `src/vay/graph/workflow.py::build_graph()` using
 | `chitchat` | `chitchat_node` | `graph/nodes/utils.py` |
 | `clarify` | `clarify_node` | `graph/nodes/utils.py` |
 | `closing` | `closing_node` | `graph/nodes/utils.py` |
+| `identity_mismatch` | `identity_mismatch_node` | `graph/nodes/utils.py` |
 | `tts` | `tts_node` | `graph/nodes/utils.py` |
 
 **Edges**: `START → orchestrator` → conditional routing → one of
-`{billing, plans, complaints, coverage, human_handoff, warning, chitchat, clarify, closing}`.
+`{billing, plans, complaints, coverage, human_handoff, warning, chitchat, clarify, closing, identity_mismatch}`.
 The four domain nodes always flow into `guardrail`, which conditionally
-routes to `human_handoff` or `tts`. Every other terminal node flows straight
-to `tts`. `tts → END`.
+routes to `human_handoff` or `tts`. Every other terminal node (including
+`identity_mismatch`) flows straight to `tts`. `tts → END`.
 
 ### 2.1 Orchestrator — what it does
 
@@ -114,18 +115,45 @@ It also:
   `session.pending_action` (e.g. an unconfirmed plan change) last turn,
   routing is forced back to that agent (`PENDING_ACTION_ROUTE`), skipping
   LLM routing for this turn entirely.
+- **PII-disclosure guardrail** (`_contains_sensitive_pii`, `core_utils.py`):
+  scans the *raw customer transcript* — independent of route/confidence, and
+  independent of a pending-action confirmation — for either an Aadhaar/PAN/
+  CVV/IFSC/card/bank-account keyword, or a 9–19 digit run (10 digits
+  excluded, so it never fires on an ordinary phone number) shaped like an
+  Aadhaar/card/bank-account number, tolerant of spoken/transcribed spacing
+  ("1234 5678 9012 3456"). A hit forces `sensitive = True` for the turn, so
+  it rides the existing `sensitive → human_handoff` branch below — the call
+  **never reaches a sub-agent, RAG, or any tool**. `human_handoff_node`
+  additionally redacts the digit run before writing the transcript to
+  `handoff_log.jsonl` (matched on the `"PII disclosure:"` reason prefix), so
+  the guardrail doesn't just relocate the leak into a log file.
+- **Identity-mismatch guardrail** (`_normalize_phone` +
+  `IDENTITY_MISMATCH_TEMPLATES`, `core_utils.py`): every backend tool acts
+  only on `session.phone_number`, the number bound once at call setup (see
+  §2.2/§7) — it's never an LLM-fillable argument. If the NLU's extracted
+  `entities.phone_number` (or `phone`/`mobile_number`/`contact_number`)
+  names a **different** number (last-10-digits compared, tolerant of a
+  `+91`/leading-0/spacing), e.g. "change the plan for my friend's number
+  98765…", the sub-agent would otherwise silently act on the call's own
+  number while sounding like it acted on the one the customer named. Caught
+  here, before any sub-agent runs, and routed to the dedicated
+  `identity_mismatch` node (see below) instead of a handoff — only checked
+  for `route in {billing, plans, complaints, coverage}` and skipped entirely
+  during a pending-action confirmation turn.
 
 **Routing decision** (`route_after_orchestrator`, `nodes/utils.py`), in
 priority order:
 1. Aggressive caller, already warned once + still ending/abusive → `closing`.
 2. Aggressive caller, first offence → `warning`.
 3. Customer says goodbye → `closing`.
-4. `sensitive=true` (new dispute/cancellation/fraud) → `human_handoff` directly (sub-agents are skipped).
+4. `sensitive=true` (new dispute/cancellation/fraud, **or** the PII-disclosure
+   guardrail above) → `human_handoff` directly (sub-agents are skipped).
 5. Every failover LLM candidate failed this turn (`llm_unavailable`) → `human_handoff`.
 6. `route == "chitchat"` → `chitchat`.
 7. `route == "unclear"` or confidence below `0.4` → `human_handoff` if this is
    the 2nd+ consecutive unclear turn, else → `clarify`.
-8. Otherwise → the named domain route (`billing`/`plans`/`complaints`/`coverage`).
+8. Identity-mismatch guardrail tripped → `identity_mismatch`.
+9. Otherwise → the named domain route (`billing`/`plans`/`complaints`/`coverage`).
 
 ### 2.2 The four sub-agents
 
@@ -224,11 +252,24 @@ Post-processing on the final reply:
   human-request pattern matched against the *customer's* transcript only
   (never the agent's own draft, to avoid false triggers); (c) an uncertainty
   phrase in the draft *and* `retrieval_score < 0.5` → handoff; (d) PII-leak
-  guard (`password|pin|otp` regex in the draft) → handoff; (e) a
-  compliance-consent keyword check against the `compliance_policy` KB
-  collection (logs only, doesn't block).
+  guard (`password|pin|otp` regex in the *assistant's draft reply*) →
+  handoff; (e) a compliance-consent keyword check against the
+  `compliance_policy` KB collection (logs only, doesn't block). Note this is
+  a narrower, different check than the orchestrator's PII-disclosure
+  guardrail (§2.1) — this one catches the assistant echoing a
+  password/PIN/OTP back, the orchestrator's catches the *customer*
+  disclosing an Aadhaar/card/bank-account number in the first place, before
+  any sub-agent (and therefore this node) ever runs.
 - **`human_handoff_node`** — logs full turn context and returns a fixed,
-  localized (not LLM-generated) handoff message.
+  localized (not LLM-generated) handoff message. If `handoff_reason` starts
+  with `"PII disclosure:"`, the logged transcript is redacted
+  (`_redact_pii`) before being written to `handoff_log.jsonl`.
+- **`identity_mismatch_node`** — speaks the fixed, localized identity-
+  mismatch refusal computed by `orchestrator_node` (`identity_mismatch_reply`
+  in state) and logs the same context shape as a handoff, for an auditable
+  record — but does **not** set `handoff=True`; no sub-agent or human agent
+  is ever invoked, the call simply continues with the customer told to have
+  the other person call in themselves.
 - **`warning_node`** — speaks the pre-built localized warning for a first
   aggressive/abusive offence.
 - **`chitchat_node`** / **`clarify_node`** — fixed template replies, no LLM
@@ -262,8 +303,12 @@ append-only audit log — not a queue that anything actively consumes.
 Any of the following sets `GraphState["handoff"] = True`:
 
 1. Orchestrator marks the turn `sensitive` (new billing dispute, cancellation
-   request, fraud report) → routes straight to `human_handoff`, **skipping
-   sub-agent/RAG entirely**.
+   request, fraud report — **or** the PII-disclosure guardrail below firing)
+   → routes straight to `human_handoff`, **skipping sub-agent/RAG entirely**.
+   - Sub-case: the customer's transcript contains an Aadhaar/PAN/CVV/IFSC/
+     card/bank-account keyword, or a 9–19 digit run shaped like one of those
+     numbers (`_contains_sensitive_pii`, §2.1) — `handoff_reason` is set to
+     `"PII disclosure: <reason>"` and the logged transcript is redacted.
 2. Orchestrator detects an explicit human request — regex match on transcript
    ("human", "real person", "representative", "manager", "speak to
    someone…") or an LLM intent of `escalate`/`request_human_agent`/
@@ -293,6 +338,19 @@ dashboard feed. The customer hears a fixed, hand-written, per-language
 template (`HANDOFF_MESSAGE_TEMPLATES`), deliberately *not* LLM-generated, so
 the handoff message itself can never hallucinate.
 
+**Language fallback for these fixed templates**: `localized()` (`core_utils.py`)
+looks up `language` in the given `*_TEMPLATES` dict first; if that language
+has no hand-written entry, it translates the dict's `en` entry via one LLM
+call (`{placeholder}` tokens preserved verbatim) rather than silently
+dropping the customer to English mid-conversation. Translations are cached
+process-wide per `(text, language)` — a small, fixed, finite set of pairs —
+so a given template/language combination only ever pays for one LLM round
+trip, not one per turn. Falls back to the English source itself only if that
+translation call fails outright. This applies to every `*_TEMPLATES` dict
+looked up through `localized()`, including `tools/session.py`'s
+`CONSENT_TEMPLATES`/`CONFIRM_*_TEMPLATES` (via a function-local import there,
+to avoid a module-load-order issue between `tools` and `graph`).
+
 ### 3.3 A related but distinct mechanism: two-phase consent
 
 Sensitive DB-mutating tools (`changePlan`, `sendPaymentLink`) don't hand off
@@ -311,7 +369,33 @@ Rationale stated in comments: a small, cheap LLM cannot be trusted to
 reliably gate a real account mutation on genuine customer consent, so that
 decision is pulled out of the model entirely.
 
-### 3.4 Legacy handoff (not wired in)
+### 3.4 A third distinct mechanism: identity-mismatch refusal
+
+Neither a handoff (§3.1–3.2) nor consent (§3.3) — this is a **code-level
+refusal that keeps the call going**, for when the customer's own words name
+a phone number other than `session.phone_number` (the one verified at call
+setup). Every backend tool (`build_*_tools(session)` factories in `tools/`)
+closes over that one `SessionContext` and only ever reads/writes its bound
+number; nothing about it is LLM-fillable. Without this guardrail, a request
+like "change the plan for my friend's number 98765…" would still land on
+`session.phone_number` while the sub-agent's reply reads as if it acted on
+the number the customer named — a confusing, silent identity mismatch,
+worse than an explicit refusal.
+
+1. `orchestrator_node` normalizes the NLU's `entities.phone_number` (or
+   `phone`/`mobile_number`/`contact_number`) and `state["phone_number"]` to
+   their last 10 digits (`_normalize_phone`) and compares them — only for
+   `route in {billing, plans, complaints, coverage}`, and skipped during a
+   pending-action confirmation turn.
+2. On a mismatch, `identity_mismatch_reply` is set to a fixed, localized
+   refusal (`IDENTITY_MISMATCH_TEMPLATES`) and `route_after_orchestrator`
+   sends the turn to `identity_mismatch_node` instead of the sub-agent — no
+   RAG search, no tool call, no `handoff=True`.
+3. `identity_mismatch_node` logs the context (phone number, transcript,
+   entities, route) for audit purposes and speaks the refusal, telling the
+   customer that person needs to call in themselves.
+
+### 3.5 Legacy handoff (not wired in)
 
 `src/vay/handoff/queue.py::HandoffQueueManager` is a plain in-memory list
 (`enqueue_ticket()`/`get_pending_tickets()`, no persistence, no consumer) used
@@ -535,7 +619,7 @@ similarity seen across every RAG call that turn; this becomes
 | `conversation_history` | LangChain message history for the call |
 | `min_similarity` | Guardrail confidence threshold (app.py sets 0.3) |
 | `intent`, `entities`, `normalized_query`, `nlu_confidence` | Orchestrator NLU output |
-| `sensitive` | New dispute/cancellation/fraud → forces handoff |
+| `sensitive` | New dispute/cancellation/fraud, or the PII-disclosure guardrail (§2.1/§3.1) → forces handoff |
 | `route` | billing / plans / complaints / coverage / chitchat / unclear |
 | `call_end_requested` | Customer ending call, or 2nd-offence cut |
 | `session` | `SessionContext` — the only cross-turn-persistent object |
@@ -548,6 +632,7 @@ similarity seen across every RAG call that turn; this becomes
 | `aggressive_count` | Running count of abusive turns this call |
 | `previous_route` | Prior turn's route (detects domain switches) |
 | `warning_reply` | Pre-built localized warning/call-cut text |
+| `identity_mismatch_reply` | Non-empty when `entities.phone_number` differs from the verified `session.phone_number` — routes to `identity_mismatch_node` instead of a sub-agent |
 
 `SessionContext` (`tools/session.py`) carries what actually survives across
 turns: `phone_number`, `verified`, `language`/`preferred_language`,

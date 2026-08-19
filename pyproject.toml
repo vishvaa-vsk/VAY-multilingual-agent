@@ -42,6 +42,8 @@ dependencies = [
     "streamlit",
     "gtts",
     "watchdog",
+    "optimum-quanto>=0.2.7",
+    "accelerate>=1.14.0",
     "langchain-openai>=1.5.1",
 ]
 
@@ -50,6 +52,8 @@ dev = [
     "ruff>=0.4.0",
     "pytest>=8.1.0",
     "pytest-asyncio>=0.23.0",
+    "onnx>=1.22.0",
+    "optimum[onnxruntime]>=2.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

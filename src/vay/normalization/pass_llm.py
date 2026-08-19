@@ -27,7 +27,7 @@ load_dotenv(override=True)
 from vay.types import StructuredTranscript
 
 _GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-_GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+_GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 
 # Cached LLM instance (lazy-initialized)
 _llm_instance = None

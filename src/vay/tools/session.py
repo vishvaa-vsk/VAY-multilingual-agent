@@ -131,15 +131,23 @@ CONSENT_TEMPLATES = {
 def consent_script(language: str, summary: str) -> str:
     """Build the fixed-template consent question for a sensitive action, in the caller's
     language, always ending with the literal English yes/no instruction."""
-    template = CONSENT_TEMPLATES.get(language, CONSENT_TEMPLATES["en"])
+    # Deferred import: graph.core_utils has no dependency back on tools.session, so this
+    # isn't a real circular import, but importing it at module load time here -- while
+    # graph/__init__.py's own import chain (workflow -> nodes.agents -> nodes.orchestrator)
+    # is what pulls this very module in in the first place -- would make the import order
+    # fragile. Importing inside the function sidesteps that entirely.
+    from vay.graph.core_utils import localized
+
+    template = localized(CONSENT_TEMPLATES, language)
     return template.format(summary=summary)
 
 
 # These three outcomes of confirm_pending_action() bypass the LLM entirely (same rationale
 # as CONSENT_TEMPLATES above -- a real DB mutation's confirmation text must be deterministic,
 # not model-generated), so they need their own fixed per-language templates rather than
-# relying on a sub-agent LLM call to translate them. Falls back to English for any language
-# not yet covered here -- add more entries rather than leaving callers silently in English.
+# relying on a sub-agent LLM call to translate them. A language not yet hand-written here
+# falls back to an LLM translation of the English entry at call time (see
+# graph.core_utils.localized()) rather than silently staying in English.
 CONFIRM_DECLINED_TEMPLATES = {
     "en": "Okay, I won't make that change.",
     "hi": "ठीक है, मैं यह बदलाव नहीं करूँगा।",
@@ -179,6 +187,9 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
     the sub-agent LLM, same as the consent script itself), so it's built from the fixed
     per-language templates above rather than left hardcoded in English.
     """
+    # Deferred import -- see the matching comment in consent_script() above.
+    from vay.graph.core_utils import localized
+
     pending = session.pending_action
     if not pending:
         return None
@@ -190,19 +201,19 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
     lang = pending.get("language") or session.language
 
     if not customer_said_yes:
-        return CONFIRM_DECLINED_TEMPLATES.get(lang, CONFIRM_DECLINED_TEMPLATES["en"])
+        return localized(CONFIRM_DECLINED_TEMPLATES, lang)
 
     conn = customer_db._connect()
     if pending["tool"] == "changePlan":
         new_plan_id = pending["args"]["new_plan_id"]
         plan = conn.execute("SELECT * FROM plans WHERE plan_id=?", (new_plan_id,)).fetchone()
         if not plan:
-            return CONFIRM_UNAVAILABLE_TEMPLATES.get(lang, CONFIRM_UNAVAILABLE_TEMPLATES["en"])
+            return localized(CONFIRM_UNAVAILABLE_TEMPLATES, lang)
         cust = conn.execute(
             "SELECT 1 FROM customers WHERE phone_number=?", (session.phone_number,)
         ).fetchone()
         if not cust:
-            return CONFIRM_NO_ACCOUNT_TEMPLATES.get(lang, CONFIRM_NO_ACCOUNT_TEMPLATES["en"])
+            return localized(CONFIRM_NO_ACCOUNT_TEMPLATES, lang)
         conn.execute(
             "UPDATE subscriptions SET status='cancelled' WHERE phone_number=? AND status='active'",
             (session.phone_number,),
@@ -213,7 +224,7 @@ def confirm_pending_action(session: SessionContext, customer_said_yes: bool) -> 
             (session.phone_number, new_plan_id, date.today().isoformat(), "active", ""),
         )
         conn.commit()
-        template = CONFIRM_CHANGED_TEMPLATES.get(lang, CONFIRM_CHANGED_TEMPLATES["en"])
+        template = localized(CONFIRM_CHANGED_TEMPLATES, lang)
         return template.format(plan_name=plan["plan_name"], price=plan["price"])
 
     return None

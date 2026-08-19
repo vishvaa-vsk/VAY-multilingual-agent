@@ -45,6 +45,7 @@ from vay.graph.utils import (
     DEFAULT_NLU_CONFIDENCE,
     HANDOFF_MESSAGE_TEMPLATES,
     HUMAN_REQUEST_PATTERNS,
+    IDENTITY_MISMATCH_TEMPLATES,
     NEGATION_PATTERN,
     ORCHESTRATOR_SYSTEM_PROMPT,
     PENDING_ACTION_ROUTE,
@@ -52,7 +53,9 @@ from vay.graph.utils import (
     TOOL_LOOP_FAILURE_TEMPLATES,
     UNCLEAR_ESCALATION_THRESHOLD,
     VALID_ROUTES,
+    _contains_sensitive_pii,
     _llm,
+    _normalize_phone,
     extract_json,
     localized,
     run_tool_agent,
@@ -238,6 +241,58 @@ def orchestrator_node(state: GraphState) -> GraphState:
         aggressive = False
         confidence = 1.0
 
+    # --- Sensitive-PII disclosure guardrail (Aadhaar / card / bank-account numbers) ---
+    # See _contains_sensitive_pii's docstring in core_utils.py. Checked on the RAW transcript,
+    # independent of route/confidence, and NOT gated on `forced_by_pending_action` -- a
+    # customer reading out a card number instead of "yes"/"no" mid-confirmation still needs
+    # pulling off this call, not silently ignored. Reuses the existing `sensitive ->
+    # human_handoff` branch in route_after_orchestrator, so this call never reaches
+    # billing/plans/complaints/coverage: no sub-agent LLM, no RAG search, no tool call ever
+    # sees this turn once this fires.
+    #
+    # ALSO checked on the NLU's normalized_query and stringified entities, not just the raw
+    # transcript -- a customer can read out a card number as spoken word-digits in a non-Latin
+    # script (e.g. Tamil "ஒன் டூ த்ரீ..." for "one two three...") which contains neither a
+    # Latin-script "card number" keyword nor an actual digit run, so the raw-transcript check
+    # alone misses it. The orchestrator LLM still faithfully translates/extracts it into
+    # normalized_query ("... my debit card number ...") and entities ({"card_number": "1234
+    # ..."}), so scanning those too catches what the free-text transcript check can't.
+    pii_reason = (
+        _contains_sensitive_pii(state["transcript"])
+        or _contains_sensitive_pii(str(parsed.get("normalized_query", "")))
+        or _contains_sensitive_pii(json.dumps(parsed.get("entities") or {}))
+    )
+    if pii_reason:
+        sensitive = True
+        print(f"  [Orchestrator] PII disclosure guardrail: {pii_reason} -- forcing human_handoff.")
+
+    # --- Identity-mismatch guardrail ---
+    # session.phone_number (bound once at call setup -- see tools/session.py's design note)
+    # is the ONLY number every backend tool actually reads/writes; a sub-agent LLM can never
+    # be given a different one to act on. If NLU pulled a phone_number entity out of the
+    # customer's own words that does NOT match the call's verified number (e.g. "change the
+    # plan for my friend's number 98765...", or asking for someone else's bill/ticket by
+    # number), the sub-agent would still silently act on session.phone_number while its reply
+    # reads as if it acted on the number the customer named -- a confusing, unnoticed identity
+    # mismatch rather than a visible refusal. Caught here, in code, before any sub-agent runs,
+    # for the same "never trust the LLM alone" reason as CONSENT_TEMPLATES/AFFIRMATION_PATTERN.
+    identity_mismatch_reply = ""
+    entities = parsed.get("entities") or {}
+    if route in VALID_ROUTES and not forced_by_pending_action:
+        for key in ("phone_number", "phone", "mobile_number", "contact_number"):
+            entity_val = entities.get(key)
+            if not entity_val:
+                continue
+            norm_entity = _normalize_phone(str(entity_val))
+            norm_session = _normalize_phone(state.get("phone_number", ""))
+            if norm_entity and norm_session and norm_entity != norm_session:
+                identity_mismatch_reply = localized(IDENTITY_MISMATCH_TEMPLATES, detected_lang)
+                print(
+                    f"  [Orchestrator] Identity mismatch: entity phone {entity_val!r} != "
+                    f"verified session number -- refusing in code."
+                )
+            break
+
     # --- Aggressive / abusive caller handling ---
     # This is SEPARATE from sensitive: aggressive callers get a warning first,
     # then a call-cut — NOT a handoff to a human agent.
@@ -299,6 +354,10 @@ def orchestrator_node(state: GraphState) -> GraphState:
     handoff_reason = ""
     if llm_unavailable:
         handoff_reason = "LLM provider(s) unavailable this turn (rate-limited/exhausted) -- escalating instead of guessing."
+    elif pii_reason:
+        # PII disclosure_node/human_handoff_node's transcript log redacts on this exact
+        # "PII disclosure:" prefix -- keep it if you change this text (see nodes/utils.py).
+        handoff_reason = f"PII disclosure: {pii_reason}"
     elif sensitive:
         handoff_reason = "Sensitive intent detected (billing dispute, cancellation, fraud/security)."
     elif explicit_human_request:
@@ -320,7 +379,7 @@ def orchestrator_node(state: GraphState) -> GraphState:
 
     return {
         "intent": parsed.get("intent", "unclear"),
-        "entities": parsed.get("entities") or {},
+        "entities": entities,
         "normalized_query": parsed.get("normalized_query") or state["transcript"],
         "nlu_confidence": confidence,
         "sensitive": sensitive,
@@ -333,6 +392,11 @@ def orchestrator_node(state: GraphState) -> GraphState:
         # Aggressive tracking
         "aggressive_count": current_agg_count,
         "warning_reply": warning_reply,
+        # Identity-mismatch guardrail: non-empty only when a phone_number entity extracted
+        # from this utterance differs from the call's verified session.phone_number -- see
+        # the check above. route_after_orchestrator sends this straight to a fixed refusal
+        # instead of a sub-agent when set.
+        "identity_mismatch_reply": identity_mismatch_reply,
         # Remember previous route for domain-switch history trimming in _run_subagent.
         # BUGFIX: same root cause as aggressive_count above -- state.get("route", "") was
         # always "" (state is rebuilt fresh every turn), so this was always "", which meant

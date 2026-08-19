@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
@@ -59,7 +60,7 @@ PENDING_ACTION_ROUTE = {"changePlan": "plans"}
 # Config
 # ---------------------------------------------------------------------------
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # required, no hardcoded fallback (security fix)
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 
 DEFAULT_MIN_SIMILARITY = 0.3  # confidence gate on the sub-agent's best RAG hit
 DEFAULT_NLU_CONFIDENCE = 0.4  # orchestrator confidence floor before routing to a sub-agent
@@ -114,9 +115,191 @@ CLARIFY_TEMPLATES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Translation fallback for fixed templates.
+# Every *_TEMPLATES dict only has hand-written entries for a handful of languages (en/hi/ta,
+# a few with a wider set) -- per those dicts' own comments, deliberately hand-written rather
+# than LLM-generated, since this is safety/consent/flow-control text a small model shouldn't
+# be trusted to paraphrase live. But a caller speaking a language NOT in a given dict was
+# previously getting silently dropped to English for that one message, mid-conversation, with
+# no warning -- confusing for a Telugu/Malayalam/etc. caller who has heard nothing but their
+# own language until this cropped up. This is a live fallback for exactly that gap: translate
+# the dict's `en` entry (the ground-truth text, never anything customer-supplied) into the
+# requested language via a normal LLM call, and cache the result -- these are a small, fixed,
+# finite set of (text, language) pairs, so there's no reason to re-pay the LLM round trip on
+# every single turn once a language has been seen once.
+# ---------------------------------------------------------------------------
+_translation_cache: dict[tuple[str, str], str] = {}
+_translation_lock = threading.Lock()
+
+
+def _translate_fixed_template(english_text: str, language: str) -> str:
+    """Translate one fixed EN template string into `language`, cached process-wide per
+    (text, language). Falls back to the English source itself (never raises) if the LLM call
+    fails -- still readable/correct, just not localized, which is exactly the old behavior
+    this is improving on, not a regression. Only ever translates OUR OWN hand-written ground
+    -truth text, never anything from the customer's transcript, so there's no prompt-injection
+    surface here."""
+    cache_key = (english_text, language)
+    with _translation_lock:
+        cached = _translation_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        llm = _llm()
+        messages = [
+            SystemMessage(
+                content=(
+                    "Translate the following telecom customer-support message into the "
+                    f'language with ISO 639-1 code "{language}". Output ONLY the translation '
+                    "-- no quotes, no explanation, no markdown. If the text contains "
+                    "placeholders in curly braces (e.g. {summary}, {plan_name}, {price}), keep "
+                    "them exactly as-is, unchanged, in the translated output."
+                )
+            ),
+            HumanMessage(content=english_text),
+        ]
+        translated = (llm.invoke(messages).content or "").strip()
+    except Exception:
+        translated = ""
+
+    result = translated or english_text
+    with _translation_lock:
+        _translation_cache[cache_key] = result
+    return result
+
+
 def localized(templates: dict, language: str) -> str:
-    """Fixed-template lookup with an English fallback -- see the *_TEMPLATES dicts above."""
-    return templates.get(language, templates["en"])
+    """Fixed-template lookup for `language`, falling back to an LLM translation of the English
+    entry (see _translate_fixed_template) when `language` has no hand-written entry in
+    `templates` -- see the *_TEMPLATES dicts above."""
+    if language in templates:
+        return templates[language]
+    if not language or language == "en":
+        return templates["en"]
+    return _translate_fixed_template(templates["en"], language)
+
+
+# ---------------------------------------------------------------------------
+# Sensitive-PII disclosure guardrail (Aadhaar / card / bank-account numbers).
+# Per kb_docs/compliance_policy.md, this assistant must never retrieve, echo, store, or
+# reason over a customer's government-ID or payment-instrument numbers -- unlike the
+# identity-mismatch guardrail (which only concerns WHICH account a tool acts on), this fires
+# purely off what the CUSTOMER said, before any sub-agent/RAG/tool ever sees this turn's
+# transcript, and forces an immediate human handoff. Two independent signals, either is
+# sufficient -- a keyword (aadhaar/PAN/CVV/IFSC/"card number"/"bank account") or a long digit
+# run shaped like one of these numbers (Aadhaar=12 digits, card=13-19, bank account=9-18,
+# tolerant of the spaced/grouped-by-4s way people actually read these out, e.g.
+# "1234 5678 9012 3456"). Deliberately excludes a bare 10-digit run -- that's the shape of an
+# Indian phone number, already handled by the separate identity-mismatch guardrail, and
+# treating every 10-digit number as Aadhaar/card-shaped would make this guardrail fire on
+# nearly every call.
+# ---------------------------------------------------------------------------
+SENSITIVE_PII_KEYWORDS = re.compile(
+    r"\b(aadhaar|aadhar|pan card|cvv|ifsc|debit card|credit card|card number|"
+    r"bank account|account number|card expiry|expiry date)\b",
+    re.IGNORECASE,
+)
+# A run of digits tolerant of spoken/transcribed group separators (spaces or dashes between
+# groups, as a customer would actually read out a long number) -- length is checked separately
+# after stripping separators, since the separator positions themselves aren't meaningful here.
+_DIGIT_RUN_PATTERN = re.compile(r"(?:\d[\s-]?){8,24}\d")
+
+
+def _contains_sensitive_pii(text: str) -> str | None:
+    """Return a short (non-sensitive) reason string if `text` looks like it contains Aadhaar/
+    card/bank-account PII, else None. See the guardrail comment above for the two signals."""
+    if SENSITIVE_PII_KEYWORDS.search(text):
+        return "Customer used an account/ID/card keyword (Aadhaar/PAN/card/bank account/CVV/IFSC)."
+    for match in _DIGIT_RUN_PATTERN.finditer(text):
+        digits = re.sub(r"\D", "", match.group(0))
+        # Exclude exactly 10 digits (ordinary Indian phone number, own or a third party's --
+        # handled separately by the identity-mismatch guardrail) and anything shorter/longer
+        # than a plausible Aadhaar/card/bank-account number.
+        if len(digits) != 10 and 9 <= len(digits) <= 19:
+            return f"Customer spoke a {len(digits)}-digit number shaped like an Aadhaar/card/bank-account number."
+    return None
+
+
+def _redact_pii(text: str) -> str:
+    """Best-effort redaction of Aadhaar/card/bank-account-shaped digit runs before a transcript
+    that tripped the PII guardrail gets written to the handoff log -- logging the very number
+    the guardrail just caught in plaintext would defeat the point of catching it. Not a
+    guarantee against every phrasing, just meaningfully safer than the raw transcript."""
+
+    def _mask(match: "re.Match[str]") -> str:
+        digits = re.sub(r"\D", "", match.group(0))
+        return "[REDACTED]" if len(digits) != 10 and 9 <= len(digits) <= 19 else match.group(0)
+
+    return _DIGIT_RUN_PATTERN.sub(_mask, text)
+
+
+# Entity keys whose VALUE is redacted outright in any handoff-log write, regardless of which
+# guardrail (if any) triggered the handoff. This is a separate, narrower net from
+# _contains_sensitive_pii/_redact_pii above: those work off free text (the raw transcript);
+# this one works off the orchestrator NLU's *structured* entities dict, which can carry a
+# card/account number the LLM pulled out of the customer's own words (spoken as number-words,
+# or in a non-Latin script) even when neither free-text signal fired -- e.g. a customer
+# spelling out a card number as Tamil word-for-word digits ("ஒன் டூ த்ரீ..." / "one two
+# three...") never matches a Latin-script keyword or an actual digit run in the transcript,
+# but the NLU still faithfully extracts entities={"card_number": "1234..."}. Applied
+# unconditionally in human_handoff_node/identity_mismatch_node -- never gated on `reason` --
+# because the sub-agent/tool-loop can degrade to handoff for reasons unrelated to PII (rate
+# limits, tool-call errors, ...) while the turn's entities still carry sensitive data.
+_SENSITIVE_ENTITY_KEYS = re.compile(
+    r"(card[_ ]?number|cvv|expiry|ifsc|account[_ ]?number|aadhaar|aadhar|pan[_ ]?number|"
+    r"bank[_ ]?account)",
+    re.IGNORECASE,
+)
+
+
+def _redact_entities(entities: dict | None) -> dict | None:
+    """Return a copy of *entities* with any sensitive-looking key's value replaced by
+    "[REDACTED]". See _SENSITIVE_ENTITY_KEYS docstring above for why this exists as a
+    separate, unconditional pass rather than relying on the free-text PII guardrail alone."""
+    if not entities:
+        return entities
+    return {
+        k: ("[REDACTED]" if _SENSITIVE_ENTITY_KEYS.search(str(k)) else v)
+        for k, v in entities.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# Identity-mismatch guardrail templates.
+# tools/session.py's SessionContext.phone_number is the ONE number bound to this call
+# (verified at call setup, never LLM-fillable -- see that module's design note). If the
+# orchestrator's own NLU extracts a DIFFERENT phone_number entity from the customer's
+# utterance (e.g. "change the plan for my friend's number 98765..."), every backend tool
+# would silently act on session.phone_number anyway -- so without this check, the customer
+# hears an agent that sounds like it's doing what they asked ("changed to Prepaid Value for
+# 9876550006") while the mutation actually lands on the CALL's own verified number instead.
+# That's a worse failure than refusing outright: it's a silent identity mismatch, not a
+# visible error. So this is enforced in CODE, before any sub-agent/tool runs, on the same
+# "never trust the LLM alone for a consequential decision" principle as CONSENT_TEMPLATES.
+# ---------------------------------------------------------------------------
+IDENTITY_MISMATCH_TEMPLATES: dict[str, str] = {
+    "en": "I can only make changes or share account details for the verified number on this "
+          "call. If you'd like help with a different number, that person will need to call in "
+          "themselves.",
+    "hi": "मैं केवल इस कॉल पर सत्यापित नंबर के लिए ही बदलाव कर सकता हूँ या खाते की जानकारी दे "
+          "सकता हूँ। अगर आपको किसी और नंबर के लिए मदद चाहिए, तो उस व्यक्ति को खुद कॉल करना होगा।",
+    "ta": "இந்த அழைப்பில் சரிபார்க்கப்பட்ட எண்ணுக்கு மட்டுமே என்னால் மாற்றங்களைச் செய்ய அல்லது "
+          "கணக்குத் தகவல்களைப் பகிர முடியும். வேறு எண்ணுக்கு உதவி வேண்டுமெனில், அந்த நபர் "
+          "நேரடியாக அழைக்க வேண்டும்.",
+}
+
+
+def _normalize_phone(raw: str) -> str:
+    """Digits-only, last-10-digit normalization for comparing a caller-mentioned phone number
+    against the call's verified session.phone_number -- tolerant of a leading +91/0, spaces,
+    and dashes (e.g. "+91 98765-50006" and "9876550006" must compare equal). Deliberately
+    compares only the trailing 10 digits rather than requiring an exact string match, since
+    Indian numbers are always spoken/transcribed with an inconsistent country-code prefix.
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    return digits[-10:] if len(digits) >= 10 else digits
 
 
 # ---------------------------------------------------------------------------

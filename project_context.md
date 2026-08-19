@@ -14,7 +14,7 @@ A LangGraph orchestrator + 4 domain sub-agents (Billing, Plans, Complaints, Cove
 
 | Component | Choice | Notes |
 |---|---|---|
-| LLM (orchestrator + all 4 sub-agents) | Groq `llama-3.1-8b-instant` via `langchain_groq.ChatGroq` | Env var `GROQ_MODEL` overrides; `GROQ_API_KEY` required, hard error if unset, no fallback |
+| LLM (orchestrator + all 4 sub-agents) | Groq `openai/gpt-oss-20b` via `langchain_groq.ChatGroq` | Env var `GROQ_MODEL` overrides; `GROQ_API_KEY` required, hard error if unset, no fallback |
 | Orchestration | LangGraph | See Section 3 for the exact node graph |
 | TTS | `edge-tts` (Microsoft Edge neural voices) via `tts.py` | **This replaces an earlier plan to use IndicF5/gTTS** — if you see IndicF5 referenced anywhere (docs, diagrams, chat history), it's superseded; the actual code uses edge-tts |
 | Vector DB | ChromaDB, 5 collections | `all-MiniLM-L6-v2` embeddings, cosine distance |
@@ -87,7 +87,7 @@ Each sub-agent gets **only its own** retriever tool (`rag_tools.py`: `build_bill
 
 | Parameter | Default | Source |
 |---|---|---|
-| `GROQ_MODEL` | `llama-3.1-8b-instant` | `agent_graph.py`, env `GROQ_MODEL` |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` | `agent_graph.py`, env `GROQ_MODEL` |
 | `GROQ_API_KEY` | *(required)* | env var, no fallback |
 | `DEFAULT_MIN_SIMILARITY` | **0.3** | `agent_graph.py` — see flag below |
 | `DEFAULT_NLU_CONFIDENCE` | 0.4 | `agent_graph.py` — orchestrator confidence floor before routing to a sub-agent |

@@ -1104,16 +1104,42 @@
           positiveSpeechThreshold: 0.8, // Stricter threshold to ignore background noise
           onSpeechStart: () => {
             console.log("Silero VAD: Speech start detected");
+
+            // Barge-in: the caller started talking while the assistant's
+            // reply is still playing. Cut the <audio> element immediately
+            // (don't wait for onSpeechEnd — every ms here is latency the
+            // user hears as "it's ignoring me") and let this speech segment
+            // become the next turn once onSpeechEnd captures it below, same
+            // as any other utterance.
+            //
+            // Note: there's no explicit AEC here beyond whatever
+            // getUserMedia's default echoCancellation constraint gives the
+            // browser — good enough with speakers in most cases, but a
+            // headset is still the reliable setup.
+            if (config.status === 'speaking') {
+              console.log("Barge-in: interrupting TTS playback");
+              if (activeAudioSource) {
+                try { activeAudioSource.pause(); } catch (e) { }
+              }
+              config.more_chunks_pending = false;
+              config.status = 'listening';
+              updateUIState('listening');
+              sendMessageToStreamlit({ event: "barge_in" });
+            }
           },
           onSpeechEnd: (audioFloat32Array) => {
             console.log("Silero VAD: Speech end detected");
-            
+
             if (!isRecording) return; // Prevent double firing
-            
-            // We do NOT set isRecording to false, so the session stays active
-            // Instead, we just temporarily pause the VAD so it doesn't pick up the AI's response
-            myvad.pause();
-            
+
+            // Deliberately NOT pausing the VAD here (unlike before): it needs
+            // to keep listening through "thinking" and "speaking" so it can
+            // catch a barge-in (see onSpeechStart above) the instant the
+            // caller talks over the reply. The backend serializes turns on
+            // its own (Streamlit processes one script run at a time), so a
+            // second onSpeechEnd arriving mid-reply just becomes the next
+            // turn once this one finishes.
+
             // audioFloat32Array is exactly the speech segment! Encode it to WAV.
             const wavBlob = encodeWAV(audioFloat32Array);
             
@@ -1205,6 +1231,10 @@
                 if (micSourceNode) { micSourceNode.connect(analyserNode); }
               } catch (e) {}
 
+              // myvad is never paused any more (see onSpeechEnd) — it kept
+              // listening straight through this reply for barge-in. start()
+              // on an already-running instance is a harmless no-op; kept as
+              // a safety net in case a barge-in path ever leaves it paused.
               myvad.start();
           } else {
               config.status = 'idle';

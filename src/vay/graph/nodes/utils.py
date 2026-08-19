@@ -38,6 +38,7 @@ from vay.graph.utils import (
     PII_LEAK_PATTERNS,
     UNCERTAINTY_PATTERNS,
     _llm,
+    _redact_entities,
     localized,
     log_handoff,
 )
@@ -138,15 +139,42 @@ import re  # noqa: E402 (import after the function that uses it — kept here to
 
 def human_handoff_node(state: GraphState) -> GraphState:
     """Log the handoff context and return the localized handoff message."""
+    reason = state.get("handoff_reason", "unspecified")
+    transcript = state["transcript"]
+    normalized_query = state.get("normalized_query")
+    # A PII-disclosure handoff (see orchestrator_node's guardrail) exists specifically to keep
+    # an Aadhaar/card/bank-account number out of downstream systems -- writing the RAW
+    # transcript/normalized_query to handoff_log.jsonl right after would defeat that. Matched
+    # on the exact "PII disclosure:" prefix orchestrator_node sets for this case.
+    #
+    # This blanks BOTH fields entirely rather than regex-masking digit runs in them
+    # (_redact_pii still exists for that, but is not enough on its own here): a customer can
+    # read a card number out as spoken number-words ("two four three five...", or the same in
+    # any other language/script) with no literal digit character anywhere in the transcript,
+    # and the orchestrator NLU still faithfully turns that into a plain-digit
+    # normalized_query ("... card details: 2435729289793") -- _redact_pii's digit-run regex
+    # cannot catch either form. Once this branch fires we already know the turn discloses
+    # exactly the number we're obligated not to store, so there's nothing safe left to keep
+    # from either field.
+    if reason.startswith("PII disclosure:"):
+        transcript = "[REDACTED - PII disclosure]"
+        normalized_query = "[REDACTED - PII disclosure]"
+    # entities is redacted unconditionally (not gated on `reason`) -- a card/account number
+    # can end up in state["entities"] via the orchestrator NLU's structured extraction even
+    # when the handoff was triggered by something unrelated (a tool-loop failure, a rate
+    # limit, ...), and even when the free-text PII guardrail above never fired on this turn's
+    # transcript (e.g. the customer spelled the number out as word-digits in a non-Latin
+    # script, which matches neither a Latin keyword nor a literal digit run). See
+    # _redact_entities's docstring in core_utils.py.
     log_handoff(
         {
             "phone_number": state["phone_number"],
-            "transcript": state["transcript"],
+            "transcript": transcript,
             "intent": state.get("intent"),
-            "entities": state.get("entities"),
-            "normalized_query": state.get("normalized_query"),
+            "entities": _redact_entities(state.get("entities")),
+            "normalized_query": normalized_query,
             "route": state.get("route"),
-            "reason": state.get("handoff_reason", "unspecified"),
+            "reason": reason,
             "draft_reply_at_handoff": state.get("draft_reply"),
         }
     )
@@ -154,6 +182,31 @@ def human_handoff_node(state: GraphState) -> GraphState:
         "final_reply": localized(HANDOFF_MESSAGE_TEMPLATES, state.get("language", "en")),
         "handoff": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Identity-mismatch node
+# ---------------------------------------------------------------------------
+
+def identity_mismatch_node(state: GraphState) -> GraphState:
+    """Speak the fixed identity-mismatch refusal computed by orchestrator_node, bypassing
+    every sub-agent entirely -- there is nothing for a sub-agent LLM to do here since the
+    requested action targets a phone number this call was never verified for (see
+    orchestrator_node's identity-mismatch guardrail comment). Logged the same way a human
+    handoff is, since a caller repeatedly trying to act on someone else's number is worth
+    an auditable record even though no human takes over the call."""
+    log_handoff(
+        {
+            "phone_number": state["phone_number"],
+            "transcript": state["transcript"],
+            "intent": state.get("intent"),
+            "entities": _redact_entities(state.get("entities")),
+            "normalized_query": state.get("normalized_query"),
+            "route": state.get("route"),
+            "reason": "Identity mismatch: entities.phone_number differs from verified session number.",
+        }
+    )
+    return {"final_reply": state.get("identity_mismatch_reply", "")}
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +303,17 @@ def closing_node(state: GraphState) -> GraphState:
 # ---------------------------------------------------------------------------
 
 def tts_node(state: GraphState) -> GraphState:
-    """Speak the final reply via edge-tts in the caller's detected language."""
+    """Speak the final reply via edge-tts in the caller's detected language.
+
+    ``barge_in_event``, if set on state, is threaded through to
+    tts.speak() — see the field's docstring in graph/state.py.
+    """
     if os.environ.get("STREAMLIT_UI") != "1":
-        tts.speak(state.get("final_reply", ""), lang=state.get("language", "en"))
+        tts.speak(
+            state.get("final_reply", ""),
+            lang=state.get("language", "en"),
+            stop_event=state.get("barge_in_event"),
+        )
     return {}
 
 
@@ -272,7 +333,8 @@ def route_after_orchestrator(state: GraphState) -> str:
     5. Chitchat (understood, nothing actionable) → chitchat node
     6. Unclear/low-confidence (with escalation) → human_handoff
     7. Unclear/low-confidence (first time) → clarify
-    8. Valid route → billing / plans / complaints / coverage
+    8. Identity mismatch (entity phone_number != verified session number) → identity_mismatch
+    9. Valid route → billing / plans / complaints / coverage
     """
     # Call was cut due to repeated abuse — treat as closing so TTS plays the goodbye
     if state.get("call_end_requested") and state.get("warning_reply"):
@@ -299,6 +361,12 @@ def route_after_orchestrator(state: GraphState) -> str:
 
     if state.get("route") == "unclear" or state.get("nlu_confidence", 0.0) < DEFAULT_NLU_CONFIDENCE:
         return "human_handoff" if state.get("unclear_escalate") else "clarify"
+
+    # Entity phone_number named a DIFFERENT number than the one verified for this call --
+    # refuse in code rather than letting a sub-agent silently act on the wrong number (see
+    # orchestrator_node's identity-mismatch guardrail).
+    if state.get("identity_mismatch_reply"):
+        return "identity_mismatch"
 
     return state["route"]  # billing | plans | complaints | coverage
 

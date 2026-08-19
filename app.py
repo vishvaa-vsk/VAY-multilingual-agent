@@ -26,6 +26,7 @@ from vay.ui.component_specular_button import specular_button
 import io
 import soundfile as sf
 import torch
+import torchaudio
 from langchain_core.messages import AIMessage, HumanMessage
 
 from vay.asr.router import ASRRouter
@@ -563,37 +564,12 @@ def get_asr_router():
 def get_agent_graph():
     return build_graph()
 
-# ----------------- BACKGROUND MODEL PRELOADING -----------------
-@st.cache_resource
-def trigger_background_preload():
-    import threading
-    import subprocess
-    def preload_models():
-        print("[Background Preload] Starting to load ASRRouter and LangGraph...")
+# Initialize models into RAM immediately on startup so they are ready before the user speaks
+if 'models_loaded' not in st.session_state:
+    with st.spinner("Initializing AI models into memory... This will take a few seconds."):
         get_asr_router()
         get_agent_graph()
-        print("[Background Preload] Finished loading models!")
-        
-        # Seed customer database if needed
-        print("[Background Preload] Ensuring customer DB is seeded...")
-        try:
-            from vay.tools.db_queries import init_db
-            init_db()
-            print("[Background Preload] Customer DB ready!")
-        except Exception as e:
-            print(f"[Background Preload] DB seed error: {e}")
-        
-        print("[Background Preload] Triggering KB build in background...")
-        try:
-            subprocess.Popen(["uv", "run", "python", "scripts/build_kb.py"])
-        except Exception as e:
-            print(f"[Background Preload] Error starting KB build: {e}")
-            
-    threading.Thread(target=preload_models, daemon=True).start()
-    return True
-
-# Call it so it executes if it hasn't already for this server instance
-trigger_background_preload()
+        st.session_state.models_loaded = True
 
 def process_real_audio(base64_audio):
     """
@@ -609,6 +585,10 @@ def process_real_audio(base64_audio):
         if len(audio_np.shape) > 1:
             audio_np = audio_np.mean(axis=1)
         tensor_chunk = torch.from_numpy(audio_np).float()
+        
+        # Resample to 16kHz if needed, since MMS-LID and ASR models expect exactly 16000Hz
+        if sr != 16000:
+            tensor_chunk = torchaudio.functional.resample(tensor_chunk, orig_freq=sr, new_freq=16000)
         
         # 2. Route and Transcribe (ASR)
         t_asr_start = time.time()
@@ -1144,6 +1124,25 @@ else:
                     st.session_state.tts_more_pending = False
                     st.session_state.tts_chunk_queue = []
                     st.session_state.tts_next_future = None
+                    st.rerun()
+
+            elif event_name == "barge_in":
+                # Frontend already paused the <audio> element itself (see
+                # onSpeechStart in component_strands/frontend/index.html) —
+                # this just brings server-side state in line so the next
+                # rerun doesn't try to resume/replay the interrupted reply.
+                # Any in-flight tts_next_future for the abandoned reply is
+                # simply left to finish and get garbage-collected; the
+                # upcoming audio_recorded for this barge-in overwrites
+                # tts_chunk_queue/tts_next_future/audio_to_play wholesale
+                # once its own reply is ready.
+                if st.session_state.status == "speaking":
+                    print("[VoiceCall] Barge-in detected — TTS playback interrupted.")
+                    st.session_state.status = "listening"
+                    st.session_state.audio_to_play = None
+                    st.session_state.tts_chunk_queue = []
+                    st.session_state.tts_next_future = None
+                    st.session_state.tts_more_pending = False
                     st.rerun()
 
             elif event_name == "audio_recorded":
