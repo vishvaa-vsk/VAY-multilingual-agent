@@ -1,4 +1,0 @@
-Language,Samples,Whisper WER (%),Whisper CER (%),Whisper Avg Time (sec),IndicConformer WER (%),IndicConformer CER (%),IndicConformer Avg Time (sec)
-Tamil,200,62.44,17.87,0.88,26.06,5.52,1.65
-Hindi,200,35.1,17.6,0.6,12.0,6.3,1.12
-English,200,3.79,7.09,0.32,NaN,NaN,NaN
