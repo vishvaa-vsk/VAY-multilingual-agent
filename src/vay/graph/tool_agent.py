@@ -294,6 +294,31 @@ _LANGUAGE_NAMES: dict[str, str] = {
 _SCRIPT_CONFORMANCE_MIN_RATIO = 0.4
 
 
+def _looks_like_wrong_language(text: str) -> bool:
+    """True if *text*'s alphabetic characters are dominated by one of the
+    scripts in _SCRIPT_RANGES (Devanagari, Tamil, Arabic, ...) -- i.e. the
+    model replied in some OTHER real language, not English.
+
+    The old fallback in _enforce_language assumed that if a reply didn't
+    conform to the target language's script, it was safely English -- "a
+    known, understandable state". In practice that assumption breaks for
+    Indic-language sessions: gpt-oss-20b sometimes collapses toward Hindi
+    regardless of the requested target language (e.g. a Tamil ('ta') session
+    coming back in Devanagari both before AND after the translation retry).
+    That's not a safe fallback, it's silently speaking the wrong language at
+    the customer. This tells the two cases apart so the caller can ship a
+    real English/known-good reply as-is, but must NOT ship an unrecognized
+    wrong-language guess."""
+    alpha_chars = [ch for ch in text if ch.isalpha()]
+    if not alpha_chars:
+        return False
+    for lo, hi in _SCRIPT_RANGES.values():
+        script_count = sum(1 for ch in alpha_chars if lo <= ord(ch) <= hi)
+        if (script_count / len(alpha_chars)) >= _SCRIPT_CONFORMANCE_MIN_RATIO:
+            return True
+    return False
+
+
 def _script_conforms(text: str, language: str) -> bool:
     """True if at least _SCRIPT_CONFORMANCE_MIN_RATIO of *text*'s alphabetic characters
     fall in *language*'s script, or if *language* has no script mapping here (e.g. "en",
@@ -339,20 +364,36 @@ def _enforce_language(reply: str, language: str, llm: Any, show_debug: bool = Fa
         ).content.strip()
     except Exception as e:
         print(f"  [LanguageGuard] translation retry failed: {e}")
+        if _looks_like_wrong_language(reply):
+            print(
+                "  [LanguageGuard] original draft is also a wrong (non-English) language "
+                "-- shipping localized handoff instead of the wrong-language draft"
+            )
+            return localized(HANDOFF_MESSAGE_TEMPLATES, language)
         return reply
     if show_debug:
         print(f"  [LanguageGuard] translated -> {translated[:200]}")
 
     result = _detoxify_repetition(translated) or reply
     # Backstop: the retry itself is just another LLM call and can miss too
-    # (e.g. translating "ta" -> Bengali instead of Tamil). Don't ship an
-    # unverified guess -- if it still isn't in the right script, keep the
-    # original (English) reply, which is at least a known, understandable
-    # state, rather than a silently wrong language going to TTS.
+    # (e.g. translating "ta" -> Bengali/Hindi instead of Tamil, as seen in
+    # practice). Don't ship an unverified guess. If the pre-translation
+    # draft is genuinely English, that's still a known, understandable
+    # fallback state -- ship it. But if it's ALSO a wrong non-English
+    # language (e.g. the model replied in Hindi for a Tamil session both
+    # before and after the retry), returning it would silently send the
+    # wrong language to TTS -- ship a localized handoff message instead.
     if not _script_conforms(result, language):
+        if _looks_like_wrong_language(reply):
+            print(
+                f"  [LanguageGuard] translation retry still not in expected script for "
+                f"'{language}', and original draft is also wrong-language -- shipping "
+                "localized handoff instead"
+            )
+            return localized(HANDOFF_MESSAGE_TEMPLATES, language)
         print(
             f"  [LanguageGuard] translation retry still not in expected script for "
-            f"'{language}' -- keeping original reply"
+            f"'{language}' -- keeping original (English) reply"
         )
         return reply
     return result
