@@ -107,7 +107,53 @@ class WhisperASR(BaseASR):
     def __init__(self, model_id: str = "whisper-large-v3-turbo") -> None:
         self.model_id = model_id
         load_dotenv(override=True)
-        self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+        api_key = os.environ.get("GROQ_API_KEY")
+        self.client = Groq(api_key=api_key) if api_key else None
+
+    def _get_api_keys(self) -> list[str]:
+        load_dotenv(override=True)
+        keys: list[str] = []
+        primary = os.environ.get("GROQ_API_KEY")
+        if primary and primary.strip():
+            keys.append(primary.strip())
+        for idx in range(2, 20):
+            k = os.environ.get(f"GROQ_API_KEY_{idx}")
+            if k and k.strip() and k.strip() not in keys:
+                keys.append(k.strip())
+        return keys
+
+    def _create_transcription(self, **kwargs) -> Any:
+        keys = self._get_api_keys()
+        if not keys:
+            if self.client:
+                return self.client.audio.transcriptions.create(**kwargs)
+            raise RuntimeError("No Groq API keys found. Set GROQ_API_KEY in your .env file.")
+
+        last_exc: Exception | None = None
+        for key in keys:
+            try:
+                client = Groq(api_key=key)
+                res = client.audio.transcriptions.create(**kwargs)
+                self.client = client
+                return res
+            except Exception as exc:
+                last_exc = exc
+                status = getattr(exc, "status_code", None)
+                if status is None:
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                text = str(exc).lower()
+                is_auth_or_quota = (
+                    status in (401, 403, 429)
+                    or "expired_api_key" in text
+                    or "invalid_api_key" in text
+                    or "rate_limit" in text
+                )
+                if is_auth_or_quota and len(keys) > 1:
+                    print(f"[WhisperASR] Groq key failed ({exc}); trying next key...")
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -193,7 +239,7 @@ class WhisperASR(BaseASR):
         """
         wav_bytes = self._tensor_to_wav_bytes(audio_tensor)
 
-        response = self.client.audio.transcriptions.create(
+        response = self._create_transcription(
             file=("audio.wav", wav_bytes),
             model=self.model_id,
             # No ``language`` param → Whisper auto-detects from the audio
@@ -263,7 +309,7 @@ class WhisperASR(BaseASR):
             return self.transcribe_auto(audio_tensor)
 
         wav_bytes = self._tensor_to_wav_bytes(audio_tensor)
-        response = self.client.audio.transcriptions.create(
+        response = self._create_transcription(
             file=("audio.wav", wav_bytes),
             model=self.model_id,
             language=validated,

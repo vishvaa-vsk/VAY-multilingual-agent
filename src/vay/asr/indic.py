@@ -48,8 +48,12 @@ class IndicConformerASR(BaseASR):
             )
 
         if self.model is None:
+            print(
+                "[IndicConformer] Model not loaded (HF_TOKEN required for gated model) - "
+                "returning empty transcript to allow Whisper fallback."
+            )
             return ASRResult(
-                raw_text="[IndicConformer Model Not Loaded - Check HF_TOKEN]",
+                raw_text="",
                 detected_language=language,
                 language_tier=LanguageTier.TIER_1,
                 confidence=0.0,

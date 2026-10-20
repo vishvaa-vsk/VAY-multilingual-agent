@@ -99,17 +99,30 @@ def _split_into_speech_chunks(text: str) -> list[str]:
     return parts
 
 
-async def _generate_speech(text: str, voice: str, output_path: str) -> None:
-    """Async helper: synthesize text with edge-tts and save to output_path."""
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output_path)
+async def _generate_speech(text: str, voice: str, output_path: str, lang_code: str = "en") -> None:
+    """Async helper: synthesize text with edge-tts and save to output_path.
+    Falls back to gTTS if edge-tts encounters an error (e.g. 403 / network issue)."""
+    try:
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(output_path)
+    except Exception as e:
+        print(f"  [TTS synthesis error (edge-tts): {e}]")
+        try:
+            from gtts import gTTS
+            lang = lang_code.split("-")[0] if "-" in lang_code else lang_code
+            tts = gTTS(text=text, lang=lang)
+            await asyncio.to_thread(tts.save, output_path)
+            print("  [TTS fallback]: Generated speech using gTTS.")
+        except Exception as fallback_err:
+            print(f"  [TTS fallback error (gTTS): {fallback_err}]")
+            raise e
 
 
-async def _synthesize_chunk(text: str, voice: str) -> str:
+async def _synthesize_chunk(text: str, voice: str, lang_code: str = "en") -> str:
     """Synthesize one chunk to a fresh temp mp3 file, return its path."""
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(tmp_fd)
-    await _generate_speech(text, voice, tmp_path)
+    await _generate_speech(text, voice, tmp_path, lang_code=lang_code)
     return tmp_path
 
 
@@ -167,7 +180,10 @@ def _run_async(coro) -> None:
 
 
 async def _speak_pipelined(
-    chunks: list[str], voice: str, stop_event: "threading.Event | None" = None
+    chunks: list[str],
+    voice: str,
+    stop_event: "threading.Event | None" = None,
+    lang_code: str = "en",
 ) -> None:
     """Synthesize and play *chunks* in order, overlapping synthesis of the
     next chunk with playback of the current one.
@@ -182,7 +198,9 @@ async def _speak_pipelined(
     """
     loop = asyncio.get_running_loop()
 
-    next_chunk_task = asyncio.ensure_future(_synthesize_chunk(chunks[0], voice))
+    next_chunk_task = asyncio.ensure_future(
+        _synthesize_chunk(chunks[0], voice, lang_code=lang_code)
+    )
     for i in range(len(chunks)):
         if stop_event is not None and stop_event.is_set():
             next_chunk_task.cancel()
@@ -201,7 +219,7 @@ async def _speak_pipelined(
         # blocking on playback of the current one, so it runs concurrently.
         if i + 1 < len(chunks):
             next_chunk_task = asyncio.ensure_future(
-                _synthesize_chunk(chunks[i + 1], voice)
+                _synthesize_chunk(chunks[i + 1], voice, lang_code=lang_code)
             )
 
         await loop.run_in_executor(None, _play_file, current_path, stop_event)
@@ -287,7 +305,7 @@ def speak(
     # waiting for the whole reply to finish synthesizing first.
     if play and output_path is None:
         chunks = _split_into_speech_chunks(speech_text)
-        _run_async(_speak_pipelined(chunks, voice, stop_event))
+        _run_async(_speak_pipelined(chunks, voice, stop_event, lang_code=effective_lang))
         return ""
 
     # --- Single-file path: explicit output_path given, and/or play=False
@@ -300,12 +318,15 @@ def speak(
         output_path = tmp_path
 
     try:
-        asyncio.run(_generate_speech(speech_text, voice, output_path))
+        asyncio.run(_generate_speech(speech_text, voice, output_path, lang_code=effective_lang))
     except RuntimeError:
         # Already inside a running event loop (e.g. Gradio / Jupyter)
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _generate_speech(speech_text, voice, output_path))
+            future = pool.submit(
+                asyncio.run,
+                _generate_speech(speech_text, voice, output_path, lang_code=effective_lang),
+            )
             try:
                 future.result(timeout=30)
             except Exception as e:
